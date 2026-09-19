@@ -1,0 +1,21 @@
+{
+  "name": "jev-market-reflex",
+  "version": "0.1.0",
+  "description": "Fast typed AI decisions on live crypto markets, with paper-only execution and offline replay.",
+  "private": true,
+  "license": "MIT",
+  "keywords": ["jev", "typesafe-ai", "ai-agents", "crypto", "algorithmic-trading", "paper-trading", "typescript", "bun", "real-time"],
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "start": "bun src/server.ts",
+    "record": "bun src/record.ts",
+    "replay": "bun src/replay.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

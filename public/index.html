@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07090b" />
+    <title>Jev Market Reflex</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main>
+      <header>
+        <div class="identity">
+          <div class="mark"><i></i><i></i><i></i></div>
+          <div><h1>JEV <span>MARKET REFLEX</span></h1><p>CONTINUOUS TYPED DECISION ENGINE</p></div>
+        </div>
+        <div class="badges">
+          <span id="market-badge" class="badge live"><i></i> LIVE MARKET DATA</span>
+          <span class="badge amber">PAPER TRADING</span>
+          <span id="jev-badge" class="badge"><i></i> JEV CONNECTING</span>
+          <a id="mode-toggle" class="mode-toggle" href="?mode=theater">THEATER VIEW</a>
+        </div>
+      </header>
+
+      <div id="dashboard-shell" class="dashboard-shell">
+        <section class="command">
+          <div id="causal-loop" class="causal-loop"></div>
+          <div class="counter-block">
+            <div id="decision-counter" class="counter">0</div>
+            <div class="counter-label"><i></i> JEV DECISIONS</div>
+            <div id="primary-metrics" class="primary-metrics"></div>
+          </div>
+          <div id="diagnostics" class="diagnostics"></div>
+        </section>
+        <section id="markets" class="markets"></section>
+
+        <section class="tape-wrap">
+          <div class="section-title"><span>JEV DECISION STREAM</span><small id="tape-rate">● CONTINUOUS</small></div>
+          <div class="tape-head"><span>TIME</span><span>MARKET</span><span>DECISION</span><span>CONF.</span><span>LATENCY</span><span>EXECUTION</span></div>
+          <div id="tape" class="tape"></div>
+        </section>
+      </div>
+
+      <section id="theater-shell" class="theater-shell" aria-label="Jev theater mode">
+        <div class="theater-stats">
+          <div><strong id="theater-count">0</strong><span>JEV DECISIONS</span></div>
+          <div><strong id="theater-avg">—</strong><span>ms AVG</span></div>
+          <div><strong id="theater-p95">—</strong><span>ms P95</span></div>
+          <div><strong id="theater-rate">—</strong><span>/ MIN</span></div>
+        </div>
+
+        <div id="theater-stage" class="theater-stage">
+          <div class="snapshot-side">
+            <div class="theater-kicker">MARKET SNAPSHOTS</div>
+            <div id="theater-markets" class="theater-markets"></div>
+          </div>
+
+          <div class="engine-zone">
+            <div class="input-lanes" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div id="jev-core" class="jev-core">
+              <span>REAL-TIME</span>
+              <strong>JEV</strong>
+              <em>DECISION ENGINE</em>
+              <b id="core-latency">— ms</b>
+            </div>
+            <div class="output-lane" aria-hidden="true"><i></i></div>
+          </div>
+
+          <div class="output-side">
+            <div class="theater-kicker">DECISION OUTPUT</div>
+            <div id="decision-burst" class="decision-burst"></div>
+          </div>
+        </div>
+
+        <div class="heartbeat-zone">
+          <div class="heartbeat-label"><span>DECISION HEARTBEAT</span><em id="heartbeat-status">LISTENING</em></div>
+          <div id="heartbeat-rail" class="heartbeat-rail"><div class="heartbeat-line"></div></div>
+        </div>
+
+        <div class="theater-bottom">
+          <div id="theater-causal" class="theater-causal"></div>
+          <div class="action-log-wrap">
+            <div class="theater-kicker">REAL-TIME ACTION LOG</div>
+            <div id="action-log" class="action-log"></div>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <div id="status-line">JEV API — · MARKET FEED CONNECTING · UPTIME 00:00:00</div>
+        <div>REAL MARKET DATA. SIMULATED EXECUTION. NOT FINANCIAL ADVICE.</div>
+      </footer>
+      <div id="fill-toast" class="fill-toast" aria-live="polite"></div>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
