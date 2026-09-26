@@ -1,16 +1,18 @@
-#!/bin/sh
-set -e
+#!/bin/bash
+# bash (not sh/dash) is required for `wait -n`
 
 # Ensure data directory exists
 mkdir -p data/bot-live
 
+export PORT=${PORT:-3333}
+
 echo "=================================================="
 echo "🚀 Starting Jev Moon Crypto Trading Suite"
-echo "🌐 Port: ${PORT:-3333}"
+echo "🌐 Port: ${PORT}"
 echo "=================================================="
 
 # Start interactive web chart server in background
-PORT=${PORT:-3333} bun src/chart-server.ts &
+bun src/chart-server.ts &
 CHART_PID=$!
 
 # Start continuous live trading bot in background
@@ -29,5 +31,10 @@ shutdown() {
 
 trap shutdown SIGTERM SIGINT
 
-# Keep container alive and monitor both processes
+# Block until either process exits, then exit non-zero so Railway's
+# ON_FAILURE restart policy brings the whole container back up.
 wait -n "$CHART_PID" "$BOT_PID"
+STATUS=$?
+echo "⚠️  A child process exited (status $STATUS). Shutting down container for restart."
+kill -TERM "$CHART_PID" "$BOT_PID" 2>/dev/null || true
+exit 1
