@@ -33,7 +33,8 @@
     "combined": "bun src/combined.ts",
     "dip-reentry": "bun src/dip-reentry.ts",
     "test-ideas": "bun src/test-all-ideas.ts",
-    "compare": "bun src/compare-core-variants.ts"
+    "compare": "bun src/compare-core-variants.ts",
+    "test-new-ideas": "bun src/test-5-new-ideas.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
