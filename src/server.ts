@@ -147,6 +147,8 @@ const server = Bun.serve({
     }), { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": "*" } }),
     "/api/health": () => Response.json({ ok: true, marketConnected: feed.connected, jevConfigured: jev.available, model: config.model }),
     "/": Bun.file("public/index.html"),
+    "/chart": Bun.file("public/chart.html"),
+    "/chart-data.json": Bun.file("public/chart-data.json"),
     "/app.js": Bun.file("public/app.js"),
     "/styles.css": Bun.file("public/styles.css"),
   },

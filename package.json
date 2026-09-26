@@ -34,7 +34,9 @@
     "dip-reentry": "bun src/dip-reentry.ts",
     "test-ideas": "bun src/test-all-ideas.ts",
     "compare": "bun src/compare-core-variants.ts",
-    "test-new-ideas": "bun src/test-5-new-ideas.ts"
+    "test-new-ideas": "bun src/test-5-new-ideas.ts",
+    "chart": "bun src/chart-server.ts",
+    "chart:data": "bun src/generate-chart-data.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

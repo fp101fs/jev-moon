@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jev Moon · Core Strategy Historical Performance (2021–2026)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #0b0f17;
+      color: #e2e8f0;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-[#090d16] text-slate-100 antialiased selection:bg-emerald-500/20 selection:text-emerald-400">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const COLORS = {
+      BTC: '#f59e0b',    // Amber / Gold
+      ETH: '#818cf8',    // Indigo / Violet
+      SOL: '#14f195',    // Solana Mint / Cyan
+      Equity: '#10b981', // Emerald Green
+      Cash: '#64748b',   // Slate Gray
+      Grid: '#1e293b',
+      TextMuted: '#94a3b8',
+    };
+
+    function App() {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+
+      // Display options
+      const [chartMode, setChartMode] = useState('norm'); // 'norm' (% return) | 'equity' ($ capital) | 'price' ($ asset prices)
+      const [visibleAssets, setVisibleAssets] = useState({ BTC: true, ETH: true, SOL: true, Equity: true });
+      const [showTrades, setShowTrades] = useState(true);
+      const [showPnlBars, setShowPnlBars] = useState(true);
+      const [tradeFilterCoin, setTradeFilterCoin] = useState('ALL');
+      const [hoveredPointIndex, setHoveredPointIndex] = useState(null);
+      const [selectedTrade, setSelectedTrade] = useState(null);
+
+      useEffect(() => {
+        fetch('chart-data.json')
+          .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load chart-data.json`);
+            return res.json();
+          })
+          .then(d => {
+            setData(d);
+            setLoading(false);
+          })
+          .catch(err => {
+            setError(err.message);
+            setLoading(false);
+          });
+      }, []);
+
+      const monthly = data?.monthly || [];
+      const trades = data?.trades || [];
+      const summary = data?.summary;
+
+      // Filtered trades
+      const filteredTrades = useMemo(() => {
+        if (!trades) return [];
+        if (tradeFilterCoin === 'ALL') return trades;
+        return trades.filter(t => t.coin === tradeFilterCoin);
+      }, [trades, tradeFilterCoin]);
+
+      // Calculate Chart Bounds
+      const { minVal, maxVal, monthsCount } = useMemo(() => {
+        if (!monthly.length) return { minVal: 0, maxVal: 100, monthsCount: 0 };
+        let min = Infinity;
+        let max = -Infinity;
+
+        monthly.forEach(m => {
+          if (chartMode === 'norm') {
+            if (visibleAssets.BTC) { min = Math.min(min, m.btcNormPct); max = Math.max(max, m.btcNormPct); }
+            if (visibleAssets.ETH) { min = Math.min(min, m.ethNormPct); max = Math.max(max, m.ethNormPct); }
+            if (visibleAssets.SOL) { min = Math.min(min, m.solNormPct); max = Math.max(max, m.solNormPct); }
+            if (visibleAssets.Equity) { min = Math.min(min, m.equityPct); max = Math.max(max, m.equityPct); }
+          } else if (chartMode === 'equity') {
+            min = Math.min(min, m.equity);
+            max = Math.max(max, m.equity);
+          } else {
+            if (visibleAssets.BTC) { min = Math.min(min, m.btcPrice); max = Math.max(max, m.btcPrice); }
+            if (visibleAssets.ETH) { min = Math.min(min, m.ethPrice); max = Math.max(max, m.ethPrice); }
+            if (visibleAssets.SOL) { min = Math.min(min, m.solPrice); max = Math.max(max, m.solPrice); }
+          }
+        });
+
+        // Add 10% breathing room
+        const padding = (max - min) * 0.1 || 10;
+        return {
+          minVal: chartMode === 'norm' ? Math.floor(min - padding) : Math.max(0, Math.floor(min - padding)),
+          maxVal: Math.ceil(max + padding),
+          monthsCount: monthly.length,
+        };
+      }, [monthly, chartMode, visibleAssets]);
+
+      // SVG dimensions
+      const svgWidth = 1100;
+      const svgHeight = 440;
+      const padLeft = 70;
+      const padRight = 30;
+      const padTop = 30;
+      const padBottom = 50;
+
+      const innerWidth = svgWidth - padLeft - padRight;
+      const innerHeight = svgHeight - padTop - padBottom;
+
+      const getX = (index) => padLeft + (index / (monthsCount - 1)) * innerWidth;
+      const getY = (val) => padTop + innerHeight - ((val - minVal) / (maxVal - minVal || 1)) * innerHeight;
+
+      // Build SVG Polyline points
+      const btcPoints = useMemo(() => monthly.map((m, i) => `${getX(i)},${getY(chartMode === 'norm' ? m.btcNormPct : chartMode === 'equity' ? m.equity : m.btcPrice)}`).join(' '), [monthly, chartMode, minVal, maxVal]);
+      const ethPoints = useMemo(() => monthly.map((m, i) => `${getX(i)},${getY(chartMode === 'norm' ? m.ethNormPct : chartMode === 'equity' ? m.equity : m.ethPrice)}`).join(' '), [monthly, chartMode, minVal, maxVal]);
+      const solPoints = useMemo(() => monthly.map((m, i) => `${getX(i)},${getY(chartMode === 'norm' ? m.solNormPct : chartMode === 'equity' ? m.equity : m.solPrice)}`).join(' '), [monthly, chartMode, minVal, maxVal]);
+      const equityPoints = useMemo(() => monthly.map((m, i) => `${getX(i)},${getY(chartMode === 'norm' ? m.equityPct : m.equity)}`).join(' '), [monthly, chartMode, minVal, maxVal]);
+
+      // Map trades to closest monthly horizontal point
+      const tradesWithCoords = useMemo(() => {
+        if (!monthly.length) return [];
+        const startTs = monthly[0].timestamp;
+        const endTs = monthly[monthly.length - 1].timestamp;
+        const totalDuration = endTs - startTs;
+
+        return filteredTrades.map(trade => {
+          const progress = Math.max(0, Math.min(1, (trade.timestamp - startTs) / totalDuration));
+          const cx = padLeft + progress * innerWidth;
+
+          // Find corresponding monthly bar or trade value
+          const monthIdx = Math.min(monthly.length - 1, Math.floor(progress * (monthsCount - 1)));
+          const m = monthly[monthIdx];
+          let cy = getY(0);
+
+          if (chartMode === 'norm') {
+            const coinPct = trade.coin === 'BTC' ? m?.btcNormPct : trade.coin === 'ETH' ? m?.ethNormPct : m?.solNormPct;
+            cy = getY(coinPct ?? 0);
+          } else if (chartMode === 'equity') {
+            cy = getY(m?.equity ?? 10000);
+          } else {
+            cy = getY(trade.price);
+          }
+
+          return { ...trade, cx, cy };
+        });
+      }, [filteredTrades, monthly, chartMode, minVal, maxVal]);
+
+      if (loading) {
+        return (
+          <div className="flex h-screen w-full items-center justify-center">
+            <div className="text-center">
+              <div className="inline-block h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent"></div>
+              <p className="mt-4 font-mono text-sm text-slate-400">Loading historical data & simulated trades...</p>
+            </div>
+          </div>
+        );
+      }
+
+      if (error) {
+        return (
+          <div className="flex h-screen w-full items-center justify-center p-6">
+            <div className="max-w-md rounded-xl border border-red-500/30 bg-red-950/20 p-6 text-center">
+              <h2 className="text-lg font-bold text-red-400">Failed to Load Chart Data</h2>
+              <p className="mt-2 text-sm text-slate-300">{error}</p>
+              <p className="mt-4 text-xs text-slate-500">Run `bun run src/generate-chart-data.ts` to build the chart dataset.</p>
+            </div>
+          </div>
+        );
+      }
+
+      const activePoint = hoveredPointIndex !== null ? monthly[hoveredPointIndex] : monthly[monthly.length - 1];
+
+      return (
+        <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">
+          {/* Header */}
+          <div className="flex flex-col gap-4 border-b border-slate-800 pb-6 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-3">
+                <span className="flex h-3 w-3 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </span>
+                <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+                  Core Strategy Historical Performance
+                </h1>
+                <span className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/20">
+                  Full 5.1-Year Cycle
+                </span>
+              </div>
+              <p className="mt-1.5 text-sm text-slate-400">
+                200d EMA Trend + Asset-Scaled Stops + Parabolic Trims + 15% Bull Basis Yield + 1.25x Leverage (Aug 2021 – Aug 2026)
+              </p>
+            </div>
+
+            {/* View Mode Controls */}
+            <div className="flex items-center gap-2 rounded-lg bg-slate-900/90 p-1 border border-slate-800">
+              <button
+                onClick={() => setChartMode('norm')}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${chartMode === 'norm' ? 'bg-emerald-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-white'}`}
+              >
+                Normalized Return (%)
+              </button>
+              <button
+                onClick={() => setChartMode('equity')}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${chartMode === 'equity' ? 'bg-emerald-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-white'}`}
+              >
+                Portfolio Equity ($)
+              </button>
+              <button
+                onClick={() => setChartMode('price')}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${chartMode === 'price' ? 'bg-emerald-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-white'}`}
+              >
+                Coin Prices ($)
+              </button>
+            </div>
+          </div>
+
+          {/* Top KPI Cards */}
+          <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 p-4">
+              <div className="text-xs font-medium text-slate-400">Starting Stake</div>
+              <div className="mt-1 font-mono text-xl font-bold text-white">${summary.startCapital.toLocaleString()}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Aug 1, 2021</div>
+            </div>
+
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/10 p-4">
+              <div className="text-xs font-medium text-emerald-400">Ending Wealth</div>
+              <div className="mt-1 font-mono text-xl font-bold text-emerald-300">
+                ${summary.finalEquity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </div>
+              <div className="text-[11px] text-emerald-400/70 mt-0.5">10.1x Total Growth</div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 p-4">
+              <div className="text-xs font-medium text-slate-400">Total Net Profit</div>
+              <div className="mt-1 font-mono text-xl font-bold text-emerald-400">
+                +{summary.totalProfitPct.toFixed(1)}%
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">+${summary.totalProfitUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 p-4">
+              <div className="text-xs font-medium text-slate-400">Annual Return (CAGR)</div>
+              <div className="mt-1 font-mono text-xl font-bold text-indigo-400">
+                {summary.cagr.toFixed(1)}%
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Compounded yearly</div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 p-4">
+              <div className="text-xs font-medium text-slate-400">Max Cycle Drawdown</div>
+              <div className="mt-1 font-mono text-xl font-bold text-rose-400">
+                -{summary.maxDrawdownPct.toFixed(1)}%
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">2022 Crash peak-to-trough</div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 p-4">
+              <div className="text-xs font-medium text-slate-400">Total Executions</div>
+              <div className="mt-1 font-mono text-xl font-bold text-amber-300">
+                {summary.totalTrades}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">~5 trades/mo avg</div>
+            </div>
+          </div>
+
+          {/* Interactive Chart Container */}
+          <div className="mt-6 rounded-2xl border border-slate-800 bg-[#0d131f] p-4 sm:p-6 shadow-2xl">
+            {/* Chart Top Bar: Legend and Toggles */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+              {/* Asset Checkbox Toggles */}
+              <div className="flex flex-wrap items-center gap-4 text-xs font-medium">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={visibleAssets.Equity}
+                    onChange={(e) => setVisibleAssets({ ...visibleAssets, Equity: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500/20"
+                  />
+                  <span className="flex items-center gap-1.5 font-bold text-emerald-400">
+                    <span className="h-2 w-4 rounded-full bg-emerald-500 inline-block"></span>
+                    Portfolio Equity
+                  </span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={visibleAssets.BTC}
+                    onChange={(e) => setVisibleAssets({ ...visibleAssets, BTC: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-800 text-amber-500 focus:ring-amber-500/20"
+                  />
+                  <span className="flex items-center gap-1.5 font-semibold text-amber-400">
+                    <span className="h-2 w-4 rounded-full bg-amber-500 inline-block"></span>
+                    BTC
+                  </span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={visibleAssets.ETH}
+                    onChange={(e) => setVisibleAssets({ ...visibleAssets, ETH: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-800 text-indigo-400 focus:ring-indigo-400/20"
+                  />
+                  <span className="flex items-center gap-1.5 font-semibold text-indigo-400">
+                    <span className="h-2 w-4 rounded-full bg-indigo-400 inline-block"></span>
+                    ETH
+                  </span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={visibleAssets.SOL}
+                    onChange={(e) => setVisibleAssets({ ...visibleAssets, SOL: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-800 text-[#14f195] focus:ring-[#14f195]/20"
+                  />
+                  <span className="flex items-center gap-1.5 font-semibold text-[#14f195]">
+                    <span className="h-2 w-4 rounded-full bg-[#14f195] inline-block"></span>
+                    SOL
+                  </span>
+                </label>
+              </div>
+
+              {/* Trade & Overlay Toggles */}
+              <div className="flex items-center gap-3 text-xs">
+                <button
+                  onClick={() => setShowTrades(!showTrades)}
+                  className={`rounded-lg px-2.5 py-1 border transition ${showTrades ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : 'border-slate-800 bg-slate-900 text-slate-500'}`}
+                >
+                  {showTrades ? '✓ Trades Visible' : 'Show Trades'}
+                </button>
+
+                <button
+                  onClick={() => setShowPnlBars(!showPnlBars)}
+                  className={`rounded-lg px-2.5 py-1 border transition ${showPnlBars ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : 'border-slate-800 bg-slate-900 text-slate-500'}`}
+                >
+                  {showPnlBars ? '✓ Monthly P&L Bars' : 'Show P&L Bars'}
+                </button>
+
+                {showTrades && (
+                  <select
+                    value={tradeFilterCoin}
+                    onChange={(e) => setTradeFilterCoin(e.target.value)}
+                    className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
+                  >
+                    <option value="ALL">All Tickers</option>
+                    <option value="BTC">BTC Trades Only</option>
+                    <option value="ETH">ETH Trades Only</option>
+                    <option value="SOL">SOL Trades Only</option>
+                  </select>
+                )}
+              </div>
+            </div>
+
+            {/* Hover Data Inspector Bar */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-900/60 px-4 py-2 text-xs font-mono border border-slate-800/50">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Date:</span>
+                <span className="font-bold text-white">{activePoint?.monthKey || '—'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-400 font-semibold">Portfolio:</span>
+                <span className="text-white">${activePoint?.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                <span className={`text-[11px] ${activePoint?.monthPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  ({activePoint?.monthPnl >= 0 ? '+' : ''}${activePoint?.monthPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo)
+                </span>
+              </div>
+              <div className="flex items-center gap-4 text-slate-400">
+                <span>BTC: <strong className="text-amber-400">${activePoint?.btcPrice.toLocaleString()}</strong> ({activePoint?.btcNormPct >= 0 ? '+' : ''}{activePoint?.btcNormPct.toFixed(1)}%)</span>
+                <span>ETH: <strong className="text-indigo-400">${activePoint?.ethPrice.toLocaleString()}</strong> ({activePoint?.ethNormPct >= 0 ? '+' : ''}{activePoint?.ethNormPct.toFixed(1)}%)</span>
+                <span>SOL: <strong className="text-[#14f195]">${activePoint?.solPrice.toLocaleString()}</strong> ({activePoint?.solNormPct >= 0 ? '+' : ''}{activePoint?.solNormPct.toFixed(1)}%)</span>
+              </div>
+            </div>
+
+            {/* Main SVG Graph */}
+            <div className="relative mt-4 overflow-x-auto">
+              <svg
+                viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                className="w-full h-auto select-none"
+                style={{ minWidth: '800px' }}
+                onMouseLeave={() => setHoveredPointIndex(null)}
+              >
+                <defs>
+                  {/* Gradients */}
+                  <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity="0.25" />
+                    <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
+                  </linearGradient>
+                  <linearGradient id="greenBar" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" />
+                    <stop offset="100%" stopColor="#059669" />
+                  </linearGradient>
+                  <linearGradient id="redBar" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f43f5e" />
+                    <stop offset="100%" stopColor="#be123c" />
+                  </linearGradient>
+                </defs>
+
+                {/* Horizontal Grid lines & Y-axis Labels */}
+                {[0, 0.25, 0.5, 0.75, 1].map((pct) => {
+                  const val = minVal + pct * (maxVal - minVal);
+                  const y = padTop + innerHeight - pct * innerHeight;
+                  return (
+                    <g key={pct}>
+                      <line x1={padLeft} y1={y} x2={svgWidth - padRight} y2={y} stroke="#1e293b" strokeDasharray="3 3" />
+                      <text x={padLeft - 10} y={y + 4} textAnchor="end" className="text-[11px] font-mono fill-slate-500">
+                        {chartMode === 'norm' ? `${val >= 0 ? '+' : ''}${val.toFixed(0)}%` : `$${Math.round(val).toLocaleString()}`}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* Vertical Month Guidelines */}
+                {monthly.map((m, i) => {
+                  const isYearStart = m.monthKey.endsWith('-01');
+                  const x = getX(i);
+                  return (
+                    <g key={m.monthKey}>
+                      {isYearStart && (
+                        <line x1={x} y1={padTop} x2={x} y2={padTop + innerHeight} stroke="#334155" strokeWidth="1" strokeDasharray="2 2" />
+                      )}
+                    </g>
+                  );
+                })}
+
+                {/* Zero Line for % returns */}
+                {chartMode === 'norm' && minVal < 0 && maxVal > 0 && (
+                  <line x1={padLeft} y1={getY(0)} x2={svgWidth - padRight} y2={getY(0)} stroke="#475569" strokeWidth="1.5" />
+                )}
+
+                {/* Ticker Lines */}
+                {visibleAssets.BTC && (
+                  <polyline fill="none" stroke={COLORS.BTC} strokeWidth="2" strokeOpacity="0.85" points={btcPoints} />
+                )}
+                {visibleAssets.ETH && (
+                  <polyline fill="none" stroke={COLORS.ETH} strokeWidth="2" strokeOpacity="0.85" points={ethPoints} />
+                )}
+                {visibleAssets.SOL && (
+                  <polyline fill="none" stroke={COLORS.SOL} strokeWidth="2" strokeOpacity="0.85" points={solPoints} />
+                )}
+
+                {/* Equity Curve (Highlighted with glow) */}
+                {visibleAssets.Equity && (
+                  <>
+                    <polyline fill="none" stroke={COLORS.Equity} strokeWidth="3.5" points={equityPoints} />
+                    {/* Data Points */}
+                    {monthly.map((m, i) => (
+                      <circle
+                        key={i}
+                        cx={getX(i)}
+                        cy={getY(chartMode === 'norm' ? m.equityPct : m.equity)}
+                        r={hoveredPointIndex === i ? 6 : 2.5}
+                        fill={COLORS.Equity}
+                        stroke="#090d16"
+                        strokeWidth="2"
+                        className="transition-all"
+                      />
+                    ))}
+                  </>
+                )}
+
+                {/* Trade Execution Markers on Graph */}
+                {showTrades && tradesWithCoords.map((trade) => {
+                  const isBuy = trade.action === 'BUY';
+                  const isTrim = trade.action === 'TRIM';
+                  const isStop = trade.action === 'STOP' || trade.action === 'REGIME_OFF';
+
+                  const color = isBuy ? '#10b981' : isTrim ? '#f59e0b' : '#f43f5e';
+                  const isSelected = selectedTrade?.id === trade.id;
+
+                  return (
+                    <g
+                      key={trade.id}
+                      onClick={() => setSelectedTrade(trade)}
+                      className="cursor-pointer transition-transform hover:scale-125"
+                    >
+                      {isBuy && (
+                        <polygon
+                          points={`${trade.cx},${trade.cy - 7} ${trade.cx - 5},${trade.cy + 3} ${trade.cx + 5},${trade.cy + 3}`}
+                          fill={color}
+                          stroke="#090d16"
+                          strokeWidth="1.5"
+                        />
+                      )}
+                      {isTrim && (
+                        <rect
+                          x={trade.cx - 4}
+                          y={trade.cy - 4}
+                          width="8"
+                          height="8"
+                          transform={`rotate(45 ${trade.cx} ${trade.cy})`}
+                          fill={color}
+                          stroke="#090d16"
+                          strokeWidth="1.5"
+                        />
+                      )}
+                      {isStop && (
+                        <polygon
+                          points={`${trade.cx},${trade.cy + 7} ${trade.cx - 5},${trade.cy - 3} ${trade.cx + 5},${trade.cy - 3}`}
+                          fill={color}
+                          stroke="#090d16"
+                          strokeWidth="1.5"
+                        />
+                      )}
+                      {isSelected && (
+                        <circle cx={trade.cx} cy={trade.cy} r="10" fill="none" stroke="#ffffff" strokeWidth="2" strokeDasharray="2 2" />
+                      )}
+                    </g>
+                  );
+                })}
+
+                {/* Interactive Hover Vertical Scrub Line */}
+                {hoveredPointIndex !== null && (
+                  <g>
+                    <line
+                      x1={getX(hoveredPointIndex)}
+                      y1={padTop}
+                      x2={getX(hoveredPointIndex)}
+                      y2={padTop + innerHeight}
+                      stroke="#94a3b8"
+                      strokeWidth="1.5"
+                      strokeDasharray="4 4"
+                    />
+                  </g>
+                )}
+
+                {/* X-axis Monthly Labels */}
+                {monthly.map((m, i) => {
+                  const showLabel = i % 6 === 0 || i === monthly.length - 1;
+                  if (!showLabel) return null;
+                  const x = getX(i);
+                  return (
+                    <text
+                      key={m.monthKey}
+                      x={x}
+                      y={svgHeight - 15}
+                      textAnchor="middle"
+                      className="text-[11px] font-mono fill-slate-400"
+                    >
+                      {m.monthKey}
+                    </text>
+                  );
+                })}
+
+                {/* Transparent Mouse Scrubbing Rectangles per Month */}
+                {monthly.map((m, i) => {
+                  const step = innerWidth / (monthsCount - 1);
+                  const x = getX(i) - step / 2;
+                  return (
+                    <rect
+                      key={i}
+                      x={Math.max(padLeft, x)}
+                      y={padTop}
+                      width={step}
+                      height={innerHeight}
+                      fill="transparent"
+                      className="cursor-crosshair"
+                      onMouseEnter={() => setHoveredPointIndex(i)}
+                    />
+                  );
+                })}
+              </svg>
+            </div>
+
+            {/* Bottom Sub-Chart: Monthly Green/Red P&L Bars */}
+            {showPnlBars && (
+              <div className="mt-6 border-t border-slate-800/80 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
+                    Monthly Profit / Loss Performance ($ P&L per month)
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    🟢 Green = Profit &nbsp;|&nbsp; 🔴 Red = Loss / Correction
+                  </span>
+                </div>
+
+                <div className="h-24 w-full flex items-end gap-[2px] bg-slate-950/60 p-2 rounded-xl border border-slate-800/50">
+                  {monthly.map((m, i) => {
+                    const isProf = m.isProfit;
+                    const maxPnl = 15000;
+                    const heightPct = Math.min(100, Math.max(10, (Math.abs(m.monthPnl) / maxPnl) * 100));
+
+                    return (
+                      <div
+                        key={m.monthKey}
+                        className="flex-1 flex flex-col justify-end items-center h-full group relative cursor-pointer"
+                        onMouseEnter={() => setHoveredPointIndex(i)}
+                      >
+                        <div
+                          style={{ height: `${heightPct}%` }}
+                          className={`w-full rounded-t-sm transition-all duration-200 ${isProf ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-rose-500 hover:bg-rose-400'}`}
+                        ></div>
+
+                        {/* Tooltip on bar hover */}
+                        <div className="absolute bottom-full mb-2 hidden group-hover:flex flex-col items-center z-30 pointer-events-none">
+                          <div className="rounded-lg bg-slate-900 border border-slate-700 px-2.5 py-1.5 shadow-xl text-center whitespace-nowrap">
+                            <div className="text-[10px] font-mono text-slate-400">{m.monthKey}</div>
+                            <div className={`font-mono text-xs font-bold ${isProf ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {isProf ? '+' : ''}${Math.round(m.monthPnl).toLocaleString()} ({isProf ? '+' : ''}{m.monthPnlPct.toFixed(1)}%)
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Trade Detail Inspector Modal / Card */}
+          {selectedTrade && (
+            <div className="mt-6 rounded-2xl border border-emerald-500/40 bg-slate-900/90 p-5 shadow-2xl backdrop-blur">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-3">
+                  <span className={`rounded-md px-2.5 py-1 text-xs font-bold font-mono ${selectedTrade.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-300' : selectedTrade.action === 'TRIM' ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                    {selectedTrade.action} {selectedTrade.coin}
+                  </span>
+                  <span className="text-sm font-semibold text-white">Trade #{selectedTrade.id} Detail</span>
+                  <span className="text-xs font-mono text-slate-400">{selectedTrade.date}</span>
+                </div>
+                <button
+                  onClick={() => setSelectedTrade(null)}
+                  className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4 font-mono text-xs">
+                <div>
+                  <span className="text-slate-500">Execution Price:</span>
+                  <div className="text-sm font-bold text-white mt-0.5">${selectedTrade.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Trade Volume:</span>
+                  <div className="text-sm font-bold text-white mt-0.5">${selectedTrade.gross.toLocaleString(undefined, { maximumFractionDigits: 0 })} ({selectedTrade.qty.toFixed(4)} {selectedTrade.coin})</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Exchange Fee:</span>
+                  <div className="text-sm font-bold text-slate-300 mt-0.5">${selectedTrade.fee.toFixed(2)}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Trade P&L:</span>
+                  <div className={`text-sm font-bold mt-0.5 ${selectedTrade.pnlUsd >= 0 ? 'text-emerald-400' : selectedTrade.pnlUsd < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                    {selectedTrade.pnlUsd !== undefined ? `${selectedTrade.pnlUsd >= 0 ? '+' : ''}$${selectedTrade.pnlUsd.toFixed(2)} (${selectedTrade.pnlPct >= 0 ? '+' : ''}${selectedTrade.pnlPct.toFixed(1)}%)` : 'Entry Position'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-lg bg-slate-950/70 p-2.5 text-xs text-slate-300">
+                <span className="text-slate-500 font-semibold">Trigger Reason:</span> {selectedTrade.reason}
+              </div>
+            </div>
+          )}
+
+          {/* Trade History Table */}
+          <div className="mt-8 rounded-2xl border border-slate-800 bg-[#0d131f] p-5 shadow-xl">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-lg font-bold text-white">Full Trade Execution Log</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Showing all {filteredTrades.length} trades with exact entry, stop-loss, and parabolic trim fills</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">Filter Ticker:</span>
+                {['ALL', 'BTC', 'ETH', 'SOL'].map((coin) => (
+                  <button
+                    key={coin}
+                    onClick={() => setTradeFilterCoin(coin)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-semibold font-mono transition ${tradeFilterCoin === coin ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    {coin}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-96 overflow-y-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="sticky top-0 bg-[#0d131f] text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Date</th>
+                    <th className="py-2.5 px-3">Ticker</th>
+                    <th className="py-2.5 px-3">Action</th>
+                    <th className="py-2.5 px-3">Fill Price</th>
+                    <th className="py-2.5 px-3">Amount ($)</th>
+                    <th className="py-2.5 px-3">P&L ($)</th>
+                    <th className="py-2.5 px-3">Trigger Reason</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {filteredTrades.map((t) => {
+                    const isBuy = t.action === 'BUY';
+                    const isTrim = t.action === 'TRIM';
+                    const isStop = t.action === 'STOP' || t.action === 'REGIME_OFF';
+
+                    return (
+                      <tr
+                        key={t.id}
+                        onClick={() => setSelectedTrade(t)}
+                        className={`hover:bg-slate-800/40 cursor-pointer transition ${selectedTrade?.id === t.id ? 'bg-emerald-950/20' : ''}`}
+                      >
+                        <td className="py-2.5 px-3 text-slate-300">{t.date}</td>
+                        <td className="py-2.5 px-3 font-bold">
+                          <span style={{ color: COLORS[t.coin] }}>{t.coin}</span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : isTrim ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                            {t.action}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-200">${t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="py-2.5 px-3 text-slate-300">${t.gross.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                        <td className={`py-2.5 px-3 font-semibold ${t.pnlUsd > 0 ? 'text-emerald-400' : t.pnlUsd < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+                          {t.pnlUsd !== undefined ? `${t.pnlUsd >= 0 ? '+' : ''}$${t.pnlUsd.toFixed(1)}` : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400 text-[11px] truncate max-w-xs">{t.reason}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
