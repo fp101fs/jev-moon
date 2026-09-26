@@ -13,6 +13,28 @@
   },
   "monthly": [
     {
+      "monthKey": "2021-08 (Start)",
+      "timestamp": 1627776000000,
+      "btcPrice": 39845.44,
+      "ethPrice": 2555.69,
+      "solPrice": 34.165,
+      "btcNormPct": 0,
+      "ethNormPct": 0,
+      "solNormPct": 0,
+      "equity": 10000,
+      "equityPct": 0,
+      "cash": 10000,
+      "monthPnl": 0,
+      "monthPnlPct": 0,
+      "isProfit": true,
+      "regime": {
+        "BTC": false,
+        "ETH": false,
+        "SOL": false,
+        "allBull": false
+      }
+    },
+    {
       "monthKey": "2021-08",
       "timestamp": 1627776000000,
       "btcPrice": 47100.89,

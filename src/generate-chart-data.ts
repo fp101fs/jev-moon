@@ -391,6 +391,26 @@ export function generateChartDataset(): ChartDataset {
   }
 
   const monthly: MonthlyDataPoint[] = [];
+
+  // Anchor Point: Aug 1, 2021 Initial Deposit
+  monthly.push({
+    monthKey: "2021-08 (Start)",
+    timestamp: FROM,
+    btcPrice: btcInitial,
+    ethPrice: ethInitial,
+    solPrice: solInitial,
+    btcNormPct: 0,
+    ethNormPct: 0,
+    solNormPct: 0,
+    equity: CAPITAL,
+    equityPct: 0,
+    cash: CAPITAL,
+    monthPnl: 0,
+    monthPnlPct: 0,
+    isProfit: true,
+    regime: { BTC: false, ETH: false, SOL: false, allBull: false },
+  });
+
   const entries = Array.from(monthlyMap.entries());
 
   for (let i = 0; i < entries.length; i++) {
