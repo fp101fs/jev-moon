@@ -106,7 +106,8 @@ export const newCoinState = (cash: number): CoinState => ({
 });
 
 export class CoinStrategy {
-  constructor(readonly cfg: StrategyConfig, public state: CoinState, readonly symbol?: string) {}
+  /** accrueCashYield=false for live trading: the yield settings are a backtest assumption, not money the account actually earns. */
+  constructor(readonly cfg: StrategyConfig, public state: CoinState, readonly symbol?: string, readonly accrueCashYield = true) {}
 
   get quantity(): number { return this.state.lots.reduce((a, q) => a + q, 0); }
   equity(price: number): number { return this.state.cash + this.quantity * price; }
@@ -129,7 +130,7 @@ export class CoinStrategy {
       if (close < s.peak * (1 - stopDistance)) { s.stopped = true; s.stopPeak = s.peak; s.trimmedQty = 0; }
     }
 
-    if (s.cash > 0) {
+    if (this.accrueCashYield && s.cash > 0) {
       let apr = this.cfg.cashYieldApr ?? 0;
       if (this.cfg.bullCashYieldApr !== undefined && this.cfg.bearCashYieldApr !== undefined) {
         apr = (isMacroBull ?? s.regimeOn) ? this.cfg.bullCashYieldApr : this.cfg.bearCashYieldApr;

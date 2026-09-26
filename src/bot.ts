@@ -100,7 +100,7 @@ async function init(): Promise<BotState> {
     coins: {} as BotState["coins"], lastBar: {} as BotState["lastBar"], lastPrice: {} as BotState["lastPrice"], dayStart: { day: 0, equity: capital },
   };
   for (const coin of COINS) {
-    const strat = new CoinStrategy(config, newCoinState(capital / COINS.length), coin);
+    const strat = new CoinStrategy(config, newCoinState(capital / COINS.length), coin, false);
     for (const d of await ohlc(PAIRS[coin], 1440)) strat.onDailyClose(d.t, d.c); // warm up the 200-day regime
     const minutes = await ohlc(PAIRS[coin], 1);
     state.coins[coin] = strat.state;
@@ -116,7 +116,7 @@ async function init(): Promise<BotState> {
 
 async function cycle(state: BotState): Promise<void> {
   for (const coin of COINS) {
-    const strat = new CoinStrategy(state.config, state.coins[coin], coin);
+    const strat = new CoinStrategy(state.config, state.coins[coin], coin, false);
     const bars = (await ohlc(PAIRS[coin], 1, state.lastBar[coin])).filter((b) => b.t > state.lastBar[coin]);
     if (!bars.length) continue;
     if (bars[0]!.t - state.lastBar[coin] > 2 * 60_000) log(`${coin}: gap of ${Math.round((bars[0]!.t - state.lastBar[coin]) / 60_000)} min in 1-minute data (bot was down?)`);
@@ -124,6 +124,7 @@ async function cycle(state: BotState): Promise<void> {
     const lastDaily = strat.state.lastDailyClose ?? 0;
     const pendingDaily = bars.at(-1)!.t >= lastDaily + 2 * DAY ? (await ohlc(PAIRS[coin], 1440)).filter((d) => d.t > lastDaily) : [];
     for (const bar of bars) {
+      let orderFailed = false;
       while (pendingDaily.length && pendingDaily[0]!.t + DAY <= bar.t) {
         const d = pendingDaily.shift()!, was = strat.state.regimeOn, wasStopped = strat.state.stopped;
         strat.onDailyClose(d.t, d.c);
@@ -131,6 +132,9 @@ async function cycle(state: BotState): Promise<void> {
         else if (strat.state.stopped && !wasStopped) log(`${coin}: trailing stop hit — close ${d.c} is ${(state.config.trailingStop * 100).toFixed(0)}%+ below peak ${strat.state.stopPeak}; selling, will re-enter above ${strat.state.stopPeak}`);
         else if (!strat.state.stopped && wasStopped) log(`${coin}: new high ${d.c} above ${strat.state.peak} — re-entering`);
       }
+      // Snapshot the books so a rejected Kraken order can be undone and retried on the next bar at a fresh price.
+      const before = structuredClone(strat.state);
+      let placed = 0;
       for (const fill of strat.onBar(bar)) {
         let liveTxid: string | undefined;
         if (LIVE_TRADING && kraken) {
@@ -190,14 +194,27 @@ async function cycle(state: BotState): Promise<void> {
                 } else throw postErr;
               }
             }
+            placed++;
           } catch (err) {
             log(`[LIVE KRAKEN ERROR] ${coin} ${fill.side} failed: ${err instanceof Error ? err.message : err}`);
+            orderFailed = true;
+            break;
           }
         }
         record(coin, fill, liveTxid);
       }
       state.lastBar[coin] = bar.t;
       state.lastPrice[coin] = bar.c;
+      if (orderFailed) {
+        if (placed === 0) {
+          strat.state = state.coins[coin] = before;
+          log(`${coin}: order not filled — books unchanged, retrying next minute`);
+        } else {
+          // Only reachable if one bar produces several fills and a later one fails; the earlier order is real, so keep the books.
+          log(`${coin}: WARNING — ${placed} order(s) placed but a later one failed this bar; books may not match Kraken, check manually`);
+        }
+        break;
+      }
     }
   }
   const today = Math.floor(Date.now() / DAY), eq = equity(state);
