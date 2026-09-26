@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { KrakenClient } from "./kraken-client";
 
 const port = Number(Bun.env.PORT || 3333);
@@ -15,6 +15,16 @@ try {
 // In-memory cache to prevent excessive Kraken API rate-limiting
 let cacheTime = 0;
 let cachedData: any = null;
+
+// The bot rewrites its state file after every successful 1-minute cycle, so the
+// file's mtime doubles as a heartbeat.
+const BOT_STALE_MS = 3 * 60_000;
+function getBotHeartbeat(statePath: string) {
+  if (!existsSync(statePath)) return { online: false, lastHeartbeat: null, secondsAgo: null };
+  const mtime = statSync(statePath).mtimeMs;
+  const ageMs = Date.now() - mtime;
+  return { online: ageMs < BOT_STALE_MS, lastHeartbeat: new Date(mtime).toISOString(), secondsAgo: Math.round(ageMs / 1000) };
+}
 
 async function getLiveStatus() {
   const now = Date.now();
@@ -127,6 +137,7 @@ async function getLiveStatus() {
 
   const result = {
     timestamp: new Date().toISOString(),
+    bot: getBotHeartbeat(statePath),
     isLive,
     connectedToKraken: !!kraken,
     state,
@@ -171,6 +182,15 @@ const server = Bun.serve({
           { status: 500, headers: { "Content-Type": "application/json" } }
         );
       }
+    }
+
+    if (url.pathname === "/api/health") {
+      const statePath = existsSync("data/bot-live/state.json") ? "data/bot-live/state.json" : "data/bot/state.json";
+      const bot = getBotHeartbeat(statePath);
+      return new Response(JSON.stringify({ server: "ok", bot }, null, 2), {
+        status: bot.online ? 200 : 503,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache, no-store, must-revalidate" },
+      });
     }
 
     if (url.pathname === "/chart-data.json") {
