@@ -112,4 +112,17 @@ export class KrakenClient {
     }
     return parsed;
   }
+
+  async getBestBidAsk(pair: string): Promise<{ bid: number; ask: number }> {
+    const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${pair}`);
+    const data = await res.json() as any;
+    if (data.error && data.error.length > 0) throw new Error(data.error.join(", "));
+    const keys = Object.keys(data.result);
+    if (!keys.length) throw new Error(`No ticker data for ${pair}`);
+    const t = data.result[keys[0]];
+    return {
+      bid: Number(t.b[0]),
+      ask: Number(t.a[0]),
+    };
+  }
 }

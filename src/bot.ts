@@ -125,28 +125,58 @@ async function cycle(state: BotState): Promise<void> {
           try {
             const pair = PAIRS[coin];
             if (fill.side === "BUY") {
-              const res = await kraken.placeOrder({
-                pair,
-                type: "buy",
-                ordertype: config.makerEntry ? "limit" : "market",
-                volume: fill.qty,
-                price: config.makerEntry ? bar.c : undefined,
-                postOnly: config.makerEntry,
-              });
-              liveTxid = res.txid[0];
-              log(`[LIVE KRAKEN] Placed BUY ${fill.qty.toFixed(6)} ${coin} @ $${bar.c} (txid: ${liveTxid})`);
+              let orderPrice = bar.c;
+              if (config.makerEntry) {
+                try {
+                  const bb = await kraken.getBestBidAsk(pair);
+                  orderPrice = bb.bid;
+                } catch {}
+              }
+              try {
+                const res = await kraken.placeOrder({
+                  pair,
+                  type: "buy",
+                  ordertype: config.makerEntry ? "limit" : "market",
+                  volume: fill.qty,
+                  price: config.makerEntry ? orderPrice : undefined,
+                  postOnly: config.makerEntry,
+                });
+                liveTxid = res.txid[0];
+                log(`[LIVE KRAKEN] Placed BUY ${fill.qty.toFixed(6)} ${coin} @ $${orderPrice} (txid: ${liveTxid})`);
+              } catch (postErr: any) {
+                if (config.makerEntry && String(postErr).includes("Post only")) {
+                  const res = await kraken.placeOrder({ pair, type: "buy", ordertype: "market", volume: fill.qty });
+                  liveTxid = res.txid[0];
+                  log(`[LIVE KRAKEN FALLBACK] Placed market BUY ${fill.qty.toFixed(6)} ${coin} (txid: ${liveTxid})`);
+                } else throw postErr;
+              }
             } else if (fill.side === "SELL") {
               const isTrim = fill.kind === "dip-sell";
-              const res = await kraken.placeOrder({
-                pair,
-                type: "sell",
-                ordertype: isTrim ? "limit" : "market",
-                volume: fill.qty,
-                price: isTrim ? bar.c : undefined,
-                postOnly: isTrim,
-              });
-              liveTxid = res.txid[0];
-              log(`[LIVE KRAKEN] Placed SELL ${fill.qty.toFixed(6)} ${coin} (kind: ${fill.kind}, txid: ${liveTxid})`);
+              let orderPrice = bar.c;
+              if (isTrim) {
+                try {
+                  const bb = await kraken.getBestBidAsk(pair);
+                  orderPrice = bb.ask;
+                } catch {}
+              }
+              try {
+                const res = await kraken.placeOrder({
+                  pair,
+                  type: "sell",
+                  ordertype: isTrim ? "limit" : "market",
+                  volume: fill.qty,
+                  price: isTrim ? orderPrice : undefined,
+                  postOnly: isTrim,
+                });
+                liveTxid = res.txid[0];
+                log(`[LIVE KRAKEN] Placed SELL ${fill.qty.toFixed(6)} ${coin} (kind: ${fill.kind}, txid: ${liveTxid})`);
+              } catch (postErr: any) {
+                if (isTrim && String(postErr).includes("Post only")) {
+                  const res = await kraken.placeOrder({ pair, type: "sell", ordertype: "market", volume: fill.qty });
+                  liveTxid = res.txid[0];
+                  log(`[LIVE KRAKEN FALLBACK] Placed market SELL ${fill.qty.toFixed(6)} ${coin} (txid: ${liveTxid})`);
+                } else throw postErr;
+              }
             }
           } catch (err) {
             log(`[LIVE KRAKEN ERROR] ${coin} ${fill.side} failed: ${err instanceof Error ? err.message : err}`);
