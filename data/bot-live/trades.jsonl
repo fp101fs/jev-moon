@@ -1,3 +1,6 @@
 {"coin":"BTC","t":1790405160000,"side":"BUY","price":83904.6,"qty":0.000485145395350358,"fee":0.08975049784041896,"kind":"regime-on","cashAfter":0,"liveTxid":"OSEXJO-43LLL-4QDHFC","time":"2026-09-26T06:46:00.000Z"}
 {"coin":"ETH","t":1790405160000,"side":"BUY","price":2684.75,"qty":0.014914942579134184,"fee":0.08828859751105142,"kind":"regime-on","cashAfter":0,"liveTxid":"OQYVQ4-N2KTE-OZGHCM","time":"2026-09-26T06:46:00.000Z"}
 {"coin":"SOL","t":1790405160000,"side":"BUY","price":120.42,"qty":0.33062106994317497,"fee":0.08778257800523721,"kind":"regime-on","cashAfter":0,"liveTxid":"OZHXFN-HB4BG-MVMKE3","time":"2026-09-26T06:46:00.000Z"}
+{"coin":"BTC","t":1790425020000,"side":"BUY","price":84184.3,"qty":0.002766,"fee":0.93142,"kind":"top-up","cashAfter":0,"liveTxid":"OO74IU-3BG2Q-BQDU7P","time":"2026-09-26T12:17:00.000Z"}
+{"coin":"ETH","t":1790425020000,"side":"BUY","price":2691.48,"qty":0.08652,"fee":0.93147,"kind":"top-up","cashAfter":0,"liveTxid":"OFM3NN-ZFJEL-WQY4PH","time":"2026-09-26T12:17:00.000Z"}
+{"coin":"SOL","t":1790425020000,"side":"BUY","price":121.52,"qty":1.9168,"fee":0.9318,"kind":"top-up","cashAfter":0,"liveTxid":"ODP427-OZIDY-EYMNAG","time":"2026-09-26T12:17:00.000Z"}

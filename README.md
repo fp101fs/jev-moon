@@ -181,11 +181,13 @@ Prompts: the default `JEV_PROMPT=horizon-60s-v1` states a 60s horizon and a 12 b
 (no paper inventory, so simulation settings can't influence Jev). `JEV_PROMPT=original` is the author's prompt. Each recording
 writes `<name>.meta.json` with the exact prompt, its hash, the interval, and every Jev version that answered.
 
-## Paper-trading bot
+## Trading bot (paper or live Kraken)
 
 ```bash
-bun run bot          # runs forever, polling Kraken 1-minute candles; state in data/bot/ survives restarts
-bun run bot:status   # equity, today's P&L, positions, regime, next grid levels, recent trades and days
+bun run bot                             # paper: polls Kraken 1-minute candles forever; state in data/bot/
+LIVE_TRADING=true bun src/bot.ts        # LIVE: places real Kraken orders; state in data/bot-live/
+bun run bot:status                      # equity, today's P&L, positions, regime, recent trades and days
+bun run chart                           # dashboard + API on $PORT (default 3333)
 ```
 
 Strategy (`src/strategy.ts`, shared with the backtests): per coin, a 200-day EMA regime with a 5% buffer decides
@@ -194,10 +196,37 @@ whether the coin may be held, and a 10% trailing stop on daily closes sells afte
 max drawdown −25%, worst month −9% (buy & hold: −2%, −77%). Neighbouring stop settings (8%, 12%) returned about +90%,
 so expect something closer to that. `bun src/pnl-report.ts` reproduces these numbers through the bot's code.
 
-Settings: `BOT_CAPITAL` (paper, default 10000), `BOT_STRATEGY` (`core`, `core-zero-risk`, or `core-leveraged`),
+Settings: `BOT_CAPITAL` (default 100), `BOT_STRATEGY` (`core`, `core-zero-risk`, or `core-leveraged`),
 `TRAILING_STOP` (default 0.1; 0 = off), `BOT_MODE=grid` (4% × 10 grid inside regime: +34%, −10% drawdown),
-`GRID_SPACING`, `GRID_UNITS`, `MAKER_BPS`, `TAKER_BPS`, `CASH_YIELD_APR` (default 0.05 on zero-risk/leveraged).
-Paper only — it never places real orders.
+`GRID_SPACING`, `GRID_UNITS`, `MAKER_BPS`, `TAKER_BPS`, `LIVE_TRADING`, `KRAKEN_API_KEY`, `KRAKEN_API_SECRET`, `BOT_DIR`.
+
+Live behaviour:
+- **Strategy is locked to the saved state.** On restart the bot refuses to run if the strategy settings differ from the
+  ones saved in `state.json`, so switching `BOT_STRATEGY` on an existing account stops the bot rather than trading.
+- **Raising `BOT_CAPITAL`** on an existing account adds the difference, split evenly across coins. Coins in an uptrend buy
+  it into their position on the next bar (`top-up` fills); others hold it as cash until their next entry. Lowering it is ignored.
+- **Failed orders don't touch the books.** If Kraken rejects an order, that coin's state is rolled back and the strategy
+  retries on the next 1-minute bar at the fresh price.
+- **No simulated yield.** The `*CashYieldApr` settings only apply in backtests; the live bot never credits interest it
+  doesn't actually earn.
+- **Leverage is backtest-only.** `bullLeverage` (the difference between `core` and `core-zero-risk`) is used by the
+  backtests and the dashboard chart, but the live bot only places spot orders, so `core` trades the same as `core-zero-risk`.
+
+## Deployment (Railway)
+
+`Dockerfile` + `entrypoint.sh` run the dashboard and the live bot in one container (`railway.json` restarts it on failure).
+`entrypoint.sh` runs `LIVE_TRADING=true BOT_STRATEGY=core-zero-risk` with `BOT_CAPITAL` defaulting to **800**;
+if either process exits, the container exits and Railway restarts both.
+
+- **Variables:** `KRAKEN_API_KEY`, `KRAKEN_API_SECRET`, and `PORT=3333` to match the domain's target port.
+- **Volume:** mount at `/app/data` so state and trades survive redeploys. On first boot with an empty volume, the
+  container seeds it from `data/bot-live/` in the repo (baked in at `/app/seed`); existing state is never overwritten.
+  Keep that seed current: if the volume is ever lost, the bot resumes from it.
+- **Only one live instance.** Never run a local `LIVE_TRADING=true` bot while Railway is running — both would trade
+  the same Kraken account.
+- **Monitoring:** `GET /api/health` returns 200 while the bot is completing cycles (state file written within 3 minutes)
+  and 503 otherwise; the dashboard shows the same as a BOT ONLINE / OFFLINE badge. `GET /api/live-status` returns
+  state, trades enriched with Kraken fill data, and balances. Railway's deploy logs show every order and error.
 
 ## Core Strategy Offshoots & Comparative Performance
 
@@ -213,7 +242,7 @@ Three production configurations are built into `src/strategy.ts` and `src/bot.ts
    - **Parabolic Extension Trimming**: Trims 25% of position into cash when price stretches > 60% above the 200d EMA.
    - **Dynamic Basis Yield**: 15% APR on idle cash during macro bull pauses (5% in bear).
    - **Maker-First Execution**: 22 bps limit orders vs 40 bps taker fees. Zero added leverage.
-3. **New Core (`BOT_STRATEGY=core-leveraged` or `core`)**: Combines all Zero-Risk structural upgrades + **1.25x spot leverage** exclusively during synchronized macro bull runs (when BTC, ETH, and SOL all trend above their 200d averages).
+3. **New Core (`BOT_STRATEGY=core-leveraged` or `core`)**: Combines all Zero-Risk structural upgrades + **1.25x spot leverage** exclusively during synchronized macro bull runs (when BTC, ETH, and SOL all trend above their 200d averages). *Backtest only: the live bot does not borrow (see above).*
 
 ### Head-to-Head Comparison ($10,000 Starting Capital, Kraken Pro Fees)
 
