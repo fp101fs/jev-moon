@@ -24,6 +24,13 @@ export function startRecording(path: string): (snapshot: Record<string, any>) =>
   };
 }
 
+export const metaPathFor = (path: string) => path.replace(/\.jsonl$/, "") + ".meta.json";
+
+export function writeRecordingMeta(path: string, meta: Record<string, unknown>): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(metaPathFor(path), `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+}
+
 export function readRecording(path: string): RecordingFrame[] {
   const text = readFileSync(path, "utf8");
   const frames = text.split("\n").filter(Boolean).map((line, index) => {

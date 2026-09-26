@@ -2,10 +2,18 @@ import { SYMBOLS, type MarketState, type SymbolName } from "./types";
 import { trimRollingState, updateLevel } from "./features";
 
 const WS_URL = "wss://ws.kraken.com/v2";
+const BOOK_DEPTH = 10;
+
+/** Kraken sends no delete for levels that fall past the subscribed depth, so the client must drop them itself. */
+export function truncateBook(market: Pick<MarketState, "bids" | "asks">, depth = BOOK_DEPTH): void {
+  market.bids = new Map([...market.bids.entries()].sort((a, b) => b[0] - a[0]).slice(0, depth));
+  market.asks = new Map([...market.asks.entries()].sort((a, b) => a[0] - b[0]).slice(0, depth));
+}
 
 export class KrakenMarketFeed {
   markets = Object.fromEntries(SYMBOLS.map((symbol) => [symbol, { symbol, bids: new Map<number, number>(), asks: new Map<number, number>(), prices: [], trades: [], updatedAt: 0 }])) as unknown as Record<SymbolName, MarketState>;
   connected = false;
+  resyncs = 0;
   eventTimes: number[] = [];
   private ws?: WebSocket;
   private retry = 500;
@@ -26,7 +34,7 @@ export class KrakenMarketFeed {
     this.ws.addEventListener("open", () => {
       this.connected = true;
       this.retry = 500;
-      this.ws!.send(JSON.stringify({ method: "subscribe", params: { channel: "book", symbol: SYMBOLS, depth: 10, snapshot: true } }));
+      this.ws!.send(JSON.stringify({ method: "subscribe", params: { channel: "book", symbol: SYMBOLS, depth: BOOK_DEPTH, snapshot: true } }));
       this.ws!.send(JSON.stringify({ method: "subscribe", params: { channel: "trade", symbol: SYMBOLS, snapshot: false } }));
       this.onUpdate();
     });
@@ -40,6 +48,15 @@ export class KrakenMarketFeed {
     });
   }
 
+  /** Drop the connection so the reconnect re-subscribes and rebuilds every book from a fresh snapshot. */
+  private resync(reason: string): void {
+    if (!this.connected) return;
+    this.resyncs++;
+    console.warn(`Kraken resync #${this.resyncs}: ${reason}`);
+    this.connected = false;
+    this.ws?.close();
+  }
+
   private handle(message: any): void {
     const now = Date.now();
     if (message.channel === "book" && Array.isArray(message.data)) {
@@ -49,8 +66,10 @@ export class KrakenMarketFeed {
         if (message.type === "snapshot") { market.bids.clear(); market.asks.clear(); }
         for (const level of data.bids ?? []) updateLevel(market.bids, Number(level.price), Number(level.qty));
         for (const level of data.asks ?? []) updateLevel(market.asks, Number(level.price), Number(level.qty));
+        truncateBook(market);
         const bestBid = Math.max(...market.bids.keys());
         const bestAsk = Math.min(...market.asks.keys());
+        if (bestBid >= bestAsk) { this.resync(`${data.symbol} book crossed (${bestBid} ≥ ${bestAsk})`); return; }
         if (Number.isFinite(bestBid) && Number.isFinite(bestAsk)) market.prices.push({ timestamp: now, price: (bestBid + bestAsk) / 2 });
         market.updatedAt = now;
         trimRollingState(market, now);

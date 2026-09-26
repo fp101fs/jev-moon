@@ -164,3 +164,101 @@ See [the architecture notes](docs/architecture.md) for system boundaries and [CO
 ## License
 
 [MIT](LICENSE)
+
+## Is Jev better than a coin flip?
+
+```bash
+OPENROUTER_API_KEY=... RECORD_DURATION_SECONDS=7200 bun run record   # ~2h live session, ~$0.25 of Jev calls
+bun run backtest recordings/live-<stamp>.jsonl
+```
+
+`backtest` scores Jev's direction at 5s/30s/60s (`HORIZONS_S`), counting only non-overlapping calls so z-scores aren't
+inflated, plus "jev lean" (which side Jev puts more probability on, even when it holds) and a confidence-calibration table.
+It then replays paper P&L against momentum, buy & hold, and a random baseline that trades at Jev's exact timing and size but
+flips a coin for direction, at 5 and 26 bps fees (`FEE_SCENARIOS_BPS`).
+
+Prompts: the default `JEV_PROMPT=horizon-60s-v1` states a 60s horizon and a 12 bps round-trip cost, and sends market data only
+(no paper inventory, so simulation settings can't influence Jev). `JEV_PROMPT=original` is the author's prompt. Each recording
+writes `<name>.meta.json` with the exact prompt, its hash, the interval, and every Jev version that answered.
+
+## Paper-trading bot
+
+```bash
+bun run bot          # runs forever, polling Kraken 1-minute candles; state in data/bot/ survives restarts
+bun run bot:status   # equity, today's P&L, positions, regime, next grid levels, recent trades and days
+```
+
+Strategy (`src/strategy.ts`, shared with the backtests): per coin, a 200-day EMA regime with a 5% buffer decides
+whether the coin may be held, and a 10% trailing stop on daily closes sells after a 10% fall from the peak close
+(re-entering on a new high). Backtest Jan 2022 – Aug 2026, $10,000, Kraken $10k-tier fees: +$12,503 (+125%, +19%/yr),
+max drawdown −25%, worst month −9% (buy & hold: −2%, −77%). Neighbouring stop settings (8%, 12%) returned about +90%,
+so expect something closer to that. `bun src/pnl-report.ts` reproduces these numbers through the bot's code.
+
+Settings: `BOT_CAPITAL` (paper, default 10000), `BOT_STRATEGY` (`core`, `core-zero-risk`, or `core-leveraged`),
+`TRAILING_STOP` (default 0.1; 0 = off), `BOT_MODE=grid` (4% × 10 grid inside regime: +34%, −10% drawdown),
+`GRID_SPACING`, `GRID_UNITS`, `MAKER_BPS`, `TAKER_BPS`, `CASH_YIELD_APR` (default 0.05 on zero-risk/leveraged).
+Paper only — it never places real orders.
+
+## Core Strategy Offshoots & Comparative Performance
+
+Run the head-to-head backtest across all 5.7 years of BTC/ETH/SOL data:
+```bash
+bun run compare
+```
+
+Three production configurations are built into `src/strategy.ts` and `src/bot.ts`:
+1. **Core (Baseline)**: 200-day EMA trend filter + 10% trailing stop + patient new-high re-entry (`close > stopPeak`).
+2. **Core + Zero Extra Risk (`BOT_STRATEGY=core-zero-risk`)**: Adds **5% APR cash yield** on idle cash balances + **maker-first orders** (22 bps vs 40 bps). Zero extra leverage or market risk.
+3. **Core + Bull Leverage (`BOT_STRATEGY=core-leveraged`)**: Adds **1.25x spot leverage** exclusively during synchronized macro bull runs (when BTC, ETH, and SOL all trend above their 200d averages), instantly de-leveraging to 1.0x or 0x as soon as any stop fires.
+
+### Head-to-Head Comparison ($10,000 Starting Capital, Kraken Pro Fees)
+
+#### Conservative Window: Jan 2022 – Aug 2026 (4.7 Years, Starts into Crash)
+| Strategy Variant | Ending Value | Total Profit ($) | Total Profit (%) | Ann. Return (CAGR) | Average $/Day | Max Drawdown | Worst Month | Trades |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Core (Baseline)** | $20,905 | **+$10,905** | **+109%** | +17.1% | **$6.40 / day** | **−27.3%** | −11.6% | 83 |
+| **Core + 0 Risk** | $25,744 | **+$15,744** | **+157%** | +22.5% | **$9.24 / day** | **−22.8% (Safer)** | −11.2% | 83 |
+| **Core + Leverage** | $28,424 | **+$18,424** | **+184%** | +25.1% | **$10.81 / day** | **−24.5%** | −13.5% | 384 |
+
+#### Full 5.1-Year Cycle: Aug 2021 – Aug 2026 (Includes 2021 Bull Run)
+| Strategy Variant | Ending Value | Total Profit ($) | Total Profit (%) | Ann. Return (CAGR) | Average $/Day | Max Drawdown | Worst Month | Trades |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Core (Baseline)** | $46,466 | **+$36,466** | **+365%** | +35.3% | **$19.64 / day** | **−36.1%** | −13.3% | 97 |
+| **Core + 0 Risk** | $58,971 | **+$48,971** | **+490%** | +41.8% | **$26.37 / day** | **−30.1% (Safer)** | −12.9% | 97 |
+| **Core + Leverage** | $80,501 | **+$70,501** | **+705%** | +50.7% | **$37.96 / day** | **−36.0%** | −16.7% | 442 |
+
+### Year-by-Year Performance & Trade Activity (Fixed $10k Stake)
+
+| Year | Market Phase | Buy & Hold Benchmark | Core + 0 Risk (Unlev) | New Core (+1.25x Lev) | Total Trades |
+| :---: | :--- | :---: | :---: | :---: | :---: |
+| **2021** *(Aug–Dec)* | Late Bull Supercycle | +159.0% (+$90.11/d) | +102.7% (+$64.23/d) | **+131.9% (+$82.92/d)** | 18–36 trades |
+| **2022** | **Crypto Crash** | **−84.7% (−$20.68/d)** | **−14.6% (−$4.31/d)** | **−18.9% (−$5.00/d)** | **12–15 trades** |
+| **2023** | Recovery Rally | +334.8% (+$105.47/d) | +141.2% (+$27.28/d) | **+193.9% (+$34.36/d)** | 20–32 trades |
+| **2024** | Bull Expansion | +78.4% (+$22.70/d) | +33.5% (+$14.20/d) | **+42.9% (+$16.71/d)** | 32–47 trades |
+| **2025** | Choppy Correction | −23.8% (−$4.88/d) | **−2.8% (+$2.39/d)** | **−8.0% (+$1.36/d)** | 26–39 trades |
+| **2026** *(thru Aug)* | Sideways Drift | −16.7% (−$6.40/d) | **+11.3% (+$3.85/d)** | **+13.2% (+$4.05/d)** | 3–4 trades |
+
+### Operating Cost & Overhead
+- **Market Data Feed:** **$0.00 / day** (uses free public Kraken OHLC and WebSocket APIs; no keys required).
+- **LLM / API Calls:** **$0.00 / day** (0 calls/day; the production Core bot operates on deterministic trend & stop logic, avoiding LLM price-prediction token costs).
+- **Compute Overhead:** **$0.00 / day locally** (~45MB RAM Bun background process) or **~$0.13 / day (~$4/month)** on a basic cloud VPS (DigitalOcean / Hetzner) for 24/7 background execution.
+- **Trade Turnover:** **~20 to 35 trades per year across the entire portfolio** (~1 to 3 trades per month total). No capital churn, zero micro-scalping fee burn.
+
+## Dip Trading & Re-entry Research
+
+- **Dip buying edge (`bun src/dips.ts`)**: Fast liquidations (e.g. 5% drops in 1h or 10% in 24h) in BTC/ETH/SOL exhibit statistically significant mean reversion (+1.0% to +5.9% net after fees over 24h), but **only while the 200-day regime is ON**. In downtrends, dips keep plummeting (−0.3% to −0.7% net loss).
+- **Dip reserve sleeve (`bun run combined`)**: Holding 20–30% of capital in cash to buy dips reduces overall portfolio returns (+100% vs +125% core) because dip cash sits idle ~90% of the time, earning less than remaining fully invested in the trending core.
+- **Dip re-entry after trailing stop (`bun run dip-reentry`)**:
+  - *Permanent un-stop on dips*: Buying a 5% or 10% dip to un-stop the core position hurts performance (+66% to +97% vs +125% baseline at 50–100bps crash slip) and deepens drawdowns (−31% to −35% vs −25%) by catching falling knives during extended corrections.
+  - *Temporary 24h dip trades with idle cash*: If the stopped cash is used strictly for a 24-hour mean-reversion trade (selling back to cash after 24h), it boosts P&L at low volume fees (+141% to +175% vs +125% at Kraken $10k+ fees, with drawdowns of −21% to −25%), but underperforms at retail/new-account fees (+65% to +74% vs +100%) due to fee drag over ~230 trades.
+  - *Local high re-entry (10-day)*: Fails severely (+27% vs +125%) due to false breakouts during bear consolidations.
+  - *Conclusion*: The default rule—holding 100% cash after a trailing stop until a confirmed new high (`close > stopPeak`)—remains the cleanest, lowest-turnover, and most robust core policy across all fee regimes.
+
+Research scripts: `bun run candles` (single split), `bun run walkforward` (rolling out-of-sample), `bun run allocation`
+(fractions, vol targeting, regime robustness), `bun run daily` (day-by-day experience of each candidate),
+`bun src/regime-lab.ts` (regime variants: trailing stops, vol targets, golden cross), `bun src/dips.ts` (buy-the-dip study),
+`bun run combined` (core + dip reserve sleeve), `bun run dip-reentry` (evaluating dip re-entry mechanics after trailing stops),
+`bun run test-ideas` (universe expansion, leverage, cash yield tests), `bun run compare` (Core vs 0-Risk vs Leveraged offshoots).
+Data: `data/klines/*-1m-hist.csv` from data.binance.vision (Jan 2021 – Aug 2026).
+
+

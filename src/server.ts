@@ -1,16 +1,17 @@
 import { config } from "./config";
 import { computeFeatures } from "./features";
-import { JevProvider } from "./jev";
+import { JevProvider, promptSpec } from "./jev";
 import { KrakenMarketFeed } from "./market";
 import { gateAction } from "./paper";
 import { PaperEngine } from "./paper";
 import { SYMBOLS, type Action, type JevDecision, type SymbolName } from "./types";
-import { startRecording } from "./recording";
+import { startRecording, writeRecordingMeta } from "./recording";
 
 const startedAt = Date.now();
 const clients = new Set<ReadableStreamDefaultController>();
 const paper = new PaperEngine(config.startingCash, config.maxPositionUsd, config.feeBps, config.slippageBps);
-const jev = new JevProvider(config.apiKey, config.model);
+const jev = new JevProvider(config.apiKey, config.model, config.endpoint, config.promptVersion);
+const prompt = promptSpec(config.promptVersion, SYMBOLS);
 const decisions: any[] = [];
 const decisionTimes: number[] = [];
 const latencies: number[] = [];
@@ -19,12 +20,36 @@ let inFlight = false;
 let successfulCalls = 0;
 let failedCalls = 0;
 let skippedCycles = 0;
+let marketWaitCycles = 0;
 let inputTokens = 0;
+let apiCost = 0;
+let resolvedModel = "";
 let outputTokens = 0;
 let lastError = "";
 let jevOnline = jev.available;
 let lastBroadcast = 0;
 const recordSnapshot = Bun.env.RECORDING_PATH ? startRecording(Bun.env.RECORDING_PATH) : null;
+const resolvedModels = new Set<string>();
+
+// Everything needed to know exactly what Jev was asked. The paper-trading settings are listed for reference only:
+// they are not sent to Jev, and the backtest re-simulates from raw decisions.
+function writeMeta(): void {
+  if (!Bun.env.RECORDING_PATH) return;
+  writeRecordingMeta(Bun.env.RECORDING_PATH, {
+    startedAt: new Date(startedAt).toISOString(),
+    plannedDurationSeconds: Number(Bun.env.RECORDING_DURATION_SECONDS) || null,
+    endpoint: config.endpoint,
+    requestedModel: config.model,
+    resolvedModels: [...resolvedModels],
+    decisionIntervalMs: config.decisionIntervalMs,
+    promptVersion: prompt.version,
+    promptHash: prompt.hash,
+    prompt: { questions: prompt.questions, stateFields: prompt.stateFields },
+    symbols: SYMBOLS,
+    liveSimulation: { startingCash: config.startingCash, maxPositionUsd: config.maxPositionUsd, feeBps: config.feeBps, slippageBps: config.slippageBps, confidenceGate: 0.55 },
+  });
+}
+writeMeta();
 
 const feed = new KrakenMarketFeed(() => {
   const now = Date.now();
@@ -39,7 +64,7 @@ function percentile(values: number[], p: number): number {
 
 function snapshot() {
   const features = Object.fromEntries(SYMBOLS.map((symbol) => [symbol, computeFeatures(feed.markets[symbol])]));
-  const mids = Object.fromEntries(SYMBOLS.map((symbol) => [symbol, features[symbol]?.mid ?? 0]));
+  const mids = Object.fromEntries(SYMBOLS.flatMap((symbol) => features[symbol] ? [[symbol, features[symbol]!.mid]] : []));
   const markets = Object.fromEntries(SYMBOLS.map((symbol) => {
     const feature = features[symbol];
     const latest = decisions.find((d) => d.symbol === symbol);
@@ -50,14 +75,14 @@ function snapshot() {
   return {
     type: "snapshot",
     now: Date.now(), startedAt,
-    status: { mode: recordSnapshot ? "record" : "live", marketOnline: feed.connected && SYMBOLS.every((s) => !features[s]?.stale), jevOnline, model: config.model, lastError, videoMode: config.videoMode },
+    status: { mode: recordSnapshot ? "record" : "live", marketOnline: feed.connected && SYMBOLS.every((s) => !features[s]?.stale), jevOnline, model: config.model, resolvedModel, promptVersion: prompt.version, promptHash: prompt.hash, lastError, videoMode: config.videoMode },
     metrics: {
       totalDecisions,
       decisionsPerMinute: decisionTimes.filter((t) => t > Date.now() - 60_000).length,
       currentLatency: latencies.at(-1) ?? 0,
       averageLatency: latencies.reduce((a, b) => a + b, 0) / Math.max(1, latencies.length),
       p50Latency: percentile(latencies, 0.5), p95Latency: percentile(latencies, 0.95),
-      successfulCalls, failedCalls, skippedCycles, inputTokens, outputTokens,
+      successfulCalls, failedCalls, skippedCycles, marketWaitCycles, marketResyncs: feed.resyncs, inputTokens, outputTokens, apiCost,
       marketEventsPerSecond: feed.eventsPerSecond(), fills: paper.fills.length,
       equity: paper.equity(mids), paperPnl: paper.equity(mids) - config.startingCash,
       realizedPnl: totalRealized,
@@ -76,7 +101,7 @@ function broadcast(): void {
 async function cycle(): Promise<void> {
   if (inFlight) { skippedCycles++; broadcast(); return; }
   const features = SYMBOLS.map((s) => computeFeatures(feed.markets[s])).filter((f): f is NonNullable<typeof f> => Boolean(f));
-  if (!feed.connected || features.length !== SYMBOLS.length || features.some((f) => f.stale)) return;
+  if (!feed.connected || features.length !== SYMBOLS.length || features.some((f) => f.stale)) { marketWaitCycles++; return; }
   if (!jev.available) { jevOnline = false; return; }
   inFlight = true;
   const started = performance.now();
@@ -85,13 +110,14 @@ async function cycle(): Promise<void> {
     const latency = performance.now() - started;
     latencies.push(latency); if (latencies.length > 300) latencies.shift();
     successfulCalls++; jevOnline = true; lastError = "";
-    inputTokens += result.inputTokens; outputTokens += result.outputTokens;
+    inputTokens += result.inputTokens; outputTokens += result.outputTokens; apiCost += result.cost; resolvedModel = result.resolvedModel;
+    if (resolvedModel && !resolvedModels.has(resolvedModel)) { resolvedModels.add(resolvedModel); writeMeta(); }
     const timestamp = Date.now();
     for (const feature of features) {
       const decision: JevDecision = result.decisions[feature.symbol.replace("/", "_")]!;
       const effectiveAction: Action = gateAction(decision.action, decision.confidence, feature.stale);
       const fill = paper.execute(feature.symbol, effectiveAction, decision.confidence, feature.bid, feature.ask, timestamp);
-      decisions.unshift({ symbol: feature.symbol, rawAction: decision.action, action: effectiveAction, confidence: decision.confidence, probabilities: decision.probabilities, latency, price: feature.mid, timestamp, fill });
+      decisions.unshift({ symbol: feature.symbol, rawAction: decision.action, action: effectiveAction, confidence: decision.confidence, probabilities: decision.probabilities, latency, price: feature.mid, timestamp, fill, model: result.resolvedModel });
       decisionTimes.push(timestamp);
       totalDecisions++;
     }
@@ -128,4 +154,4 @@ const server = Bun.serve({
 });
 
 console.log(`Jev Market Reflex: http://localhost:${server.port}`);
-console.log(`${recordSnapshot ? `Recording to ${Bun.env.RECORDING_PATH} · ` : ""}${config.model === "mock" ? "MOCK MODEL" : jev.available ? "JEV READY" : "JEV OFFLINE — add TYPESAFE_API_KEY"} · Kraken public feed`);
+console.log(`${recordSnapshot ? `Recording to ${Bun.env.RECORDING_PATH} · ` : ""}${config.model === "mock" ? "MOCK MODEL" : jev.available ? `JEV READY · prompt ${prompt.version} (${prompt.hash.slice(0, 12)}) · every ${config.decisionIntervalMs}ms` : "JEV OFFLINE — add TYPESAFE_API_KEY or OPENROUTER_API_KEY"} · Kraken public feed`);

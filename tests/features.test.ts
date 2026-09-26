@@ -11,3 +11,13 @@ describe("feature computation", () => {
     expect(f.bookImbalance).toBeCloseTo(0.2); expect(f.return1s).toBeGreaterThan(0); expect(f.recentTradeFlow).toBeCloseTo(0.6);
   });
 });
+
+import { truncateBook } from "../src/market";
+describe("book depth", () => {
+  test("keeps only the best levels on each side, so stale out-of-range levels can't cross the book", () => {
+    const market = { bids: new Map([[99, 1], [98, 1], [97, 1]]), asks: new Map([[100, 1], [103, 1], [101, 1]]) };
+    truncateBook(market, 2);
+    expect([...market.bids.keys()]).toEqual([99, 98]);
+    expect([...market.asks.keys()]).toEqual([100, 101]);
+  });
+});

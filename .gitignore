@@ -5,3 +5,5 @@ dist/
 *.log
 recordings/*.jsonl
 !recordings/example.jsonl
+recordings/*.meta.json
+data/

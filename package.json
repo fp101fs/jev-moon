@@ -4,7 +4,17 @@
   "description": "Fast typed AI decisions on live crypto markets, with paper-only execution and offline replay.",
   "private": true,
   "license": "MIT",
-  "keywords": ["jev", "typesafe-ai", "ai-agents", "crypto", "algorithmic-trading", "paper-trading", "typescript", "bun", "real-time"],
+  "keywords": [
+    "jev",
+    "typesafe-ai",
+    "ai-agents",
+    "crypto",
+    "algorithmic-trading",
+    "paper-trading",
+    "typescript",
+    "bun",
+    "real-time"
+  ],
   "type": "module",
   "scripts": {
     "dev": "bun --hot src/server.ts",
@@ -12,7 +22,18 @@
     "record": "bun src/record.ts",
     "replay": "bun src/replay.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "backtest": "bun src/backtest.ts",
+    "candles": "bun src/candle-backtest.ts",
+    "bot": "bun src/bot.ts",
+    "bot:status": "bun src/bot.ts status",
+    "daily": "bun src/daily.ts",
+    "walkforward": "bun src/walkforward.ts",
+    "allocation": "bun src/allocation.ts",
+    "combined": "bun src/combined.ts",
+    "dip-reentry": "bun src/dip-reentry.ts",
+    "test-ideas": "bun src/test-all-ideas.ts",
+    "compare": "bun src/compare-core-variants.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

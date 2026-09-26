@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
-if (!Bun.env.TYPESAFE_API_KEY) {
-  console.error("Cannot record: TYPESAFE_API_KEY is not configured.");
+if (!Bun.env.TYPESAFE_API_KEY && !Bun.env.OPENROUTER_API_KEY && Bun.env.JEV_MODEL !== "mock") {
+  console.error("Cannot record: set TYPESAFE_API_KEY or OPENROUTER_API_KEY (or JEV_MODEL=mock).");
   process.exit(1);
 }
 

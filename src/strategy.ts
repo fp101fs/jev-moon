@@ -1,0 +1,189 @@
+// The trading strategy, shared by the backtest (src/daily.ts) and the bot (src/bot.ts) so both do exactly the same thing.
+//
+// Per coin: a 200-day regime decides whether we're allowed to hold the coin at all. While the regime is on, either
+//   - "grid": capital is split into `units` slots; each `spacing` drop below the last fill buys a slot with a resting
+//     limit order (maker fee), each `spacing` rise sells the newest slot; when fully in cash the grid re-centres upward, or
+//   - "hold": the whole allocation is held.
+// When the regime turns off, everything is sold at market (taker fee) and the coin sits in cash.
+// Trailing stop (checked on daily closes): while the regime is on, a close `trailingStop` below the highest close since
+// entry also sells out; the coin is bought back only when a close makes a new high above that peak.
+
+export interface StrategyConfig {
+  mode: "grid" | "hold";
+  spacing: number;       // grid step, e.g. 0.04 = 4%
+  units: number;         // grid slots
+  regimeDays: number;    // EMA length in days
+  regimeBand: number;    // hysteresis: on above EMA × (1 + band), off below EMA × (1 − band)
+  trailingStop: number;  // e.g. 0.10 = sell after a 10% fall from the peak close; 0 = off
+  makerBps: number;
+  takerBps: number;      // including slippage
+  cashYieldApr?: number; // e.g. 0.05 = 5% APR on unallocated cash
+  makerEntry?: boolean;  // whether entries/re-entries use maker limit orders
+  bullLeverage?: number; // e.g. 1.25 = 1.25x leverage in confirmed macro bull
+  marginApr?: number;    // e.g. 0.06 = 6% APR on margin debt
+}
+
+export const DEFAULT_CONFIG: StrategyConfig = {
+  mode: "hold",
+  spacing: 0.04,
+  units: 10,
+  regimeDays: 200,
+  regimeBand: 0.05,
+  trailingStop: 0.1,
+  makerBps: 22,
+  takerBps: 40,
+  cashYieldApr: 0.05,
+  makerEntry: true,
+  bullLeverage: 1.25,
+  marginApr: 0.06,
+};
+
+export type StrategyPreset = "core" | "core-zero-risk" | "core-leveraged" | "core-baseline";
+
+export const STRATEGY_PRESETS: Record<StrategyPreset, StrategyConfig> = {
+  core: { ...DEFAULT_CONFIG },
+  "core-leveraged": { ...DEFAULT_CONFIG },
+  "core-zero-risk": {
+    ...DEFAULT_CONFIG,
+    bullLeverage: 1.0,
+  },
+  "core-baseline": {
+    ...DEFAULT_CONFIG,
+    cashYieldApr: 0,
+    makerEntry: false,
+    bullLeverage: 1.0,
+  },
+};
+
+
+export interface Bar { t: number; o: number; h: number; l: number; c: number }
+export interface Fill { t: number; side: "BUY" | "SELL"; price: number; qty: number; fee: number; kind: "grid" | "regime-on" | "regime-off" | "trailing-stop" | "dip-buy" | "dip-sell"; cashAfter: number }
+
+export interface CoinState {
+  cash: number;
+  lots: number[];        // grid: coin quantity per open slot; hold: one lot with the whole position
+  level: number;         // grid reference price (last fill)
+  active: boolean;       // was the regime on for the previous bar
+  regimeOn: boolean;     // decided at the last daily close, applies until the next one
+  peak: number;          // highest daily close since entry (trailing stop)
+  stopped: boolean;      // trailing stop has fired; waiting for a close above stopPeak
+  stopPeak: number;
+  ema: number | null;
+  lastDailyClose: number | null; // timestamp (ms) of the last daily candle fed in
+}
+
+export const newCoinState = (cash: number): CoinState => ({ cash, lots: [], level: 0, active: false, regimeOn: false, peak: 0, stopped: false, stopPeak: 0, ema: null, lastDailyClose: null });
+
+export class CoinStrategy {
+  constructor(readonly cfg: StrategyConfig, public state: CoinState) {}
+
+  get quantity(): number { return this.state.lots.reduce((a, q) => a + q, 0); }
+  equity(price: number): number { return this.state.cash + this.quantity * price; }
+
+  /** Feed each completed daily candle once, in order. Updates the regime used from the next bar on. */
+  onDailyClose(t: number, close: number): void {
+    const s = this.state;
+    if (s.lastDailyClose !== null && t <= s.lastDailyClose) return;
+    const a = 2 / (this.cfg.regimeDays + 1);
+    s.ema = s.ema === null ? close : a * close + (1 - a) * s.ema;
+    if (!s.regimeOn && close > s.ema * (1 + this.cfg.regimeBand)) s.regimeOn = true;
+    else if (s.regimeOn && close < s.ema * (1 - this.cfg.regimeBand)) s.regimeOn = false;
+    if (!s.regimeOn || !this.cfg.trailingStop) { s.peak = 0; s.stopped = false; }
+    else if (s.stopped) { if (close > s.stopPeak) { s.stopped = false; s.peak = close; } }
+    else {
+      s.peak = Math.max(s.peak ?? 0, close);
+      if (close < s.peak * (1 - this.cfg.trailingStop)) { s.stopped = true; s.stopPeak = s.peak; }
+    }
+    if (s.cash > 0 && this.cfg.cashYieldApr) {
+      s.cash += s.cash * (this.cfg.cashYieldApr / 365.25);
+    }
+    s.lastDailyClose = t;
+  }
+
+  /** May we hold the coin right now? Regime on and trailing stop not triggered. */
+  get allowed(): boolean { return this.state.regimeOn && !this.state.stopped; }
+
+  /** Process one completed 1-minute bar. Returns the fills it caused. */
+  onBar(bar: Bar): Fill[] {
+    const s = this.state, cfg = this.cfg, fills: Fill[] = [];
+    const maker = cfg.makerBps / 1e4, taker = cfg.takerBps / 1e4;
+    if (!this.allowed) {
+      if (s.lots.length) {
+        const qty = this.quantity, gross = qty * bar.o, fee = gross * taker;
+        s.cash += gross - fee; s.lots = [];
+        fills.push({ t: bar.t, side: "SELL", price: bar.o, qty, fee, kind: s.regimeOn ? "trailing-stop" : "regime-off", cashAfter: s.cash });
+      }
+      s.active = false;
+      return fills;
+    }
+    if (cfg.mode === "hold") {
+      if (!s.lots.length) {
+        const feeRate = cfg.makerEntry ? maker : taker;
+        const fee = s.cash * feeRate, qty = (s.cash - fee) / bar.o;
+        s.lots = [qty]; s.cash = 0;
+        fills.push({ t: bar.t, side: "BUY", price: bar.o, qty, fee, kind: "regime-on", cashAfter: s.cash });
+      }
+      s.active = true;
+      return fills;
+    }
+    if (!s.active) { s.level = bar.o; s.active = true; }
+    const slot = (s.cash + this.quantity * bar.o) / cfg.units;
+    const buyAt = s.level * (1 - cfg.spacing), sellAt = s.level * (1 + cfg.spacing);
+    if (bar.l <= buyAt && s.lots.length < cfg.units && s.cash >= slot * 0.999) {
+      const fee = slot * maker, qty = (slot - fee) / buyAt;
+      s.lots.push(qty); s.cash -= slot; s.level = buyAt;
+      fills.push({ t: bar.t, side: "BUY", price: buyAt, qty, fee, kind: "grid", cashAfter: s.cash });
+    } else if (bar.h >= sellAt && s.lots.length) {
+      const qty = s.lots.pop()!, gross = qty * sellAt, fee = gross * maker;
+      s.cash += gross - fee; s.level = sellAt;
+      fills.push({ t: bar.t, side: "SELL", price: sellAt, qty, fee, kind: "grid", cashAfter: s.cash });
+    } else if (!s.lots.length && bar.h >= sellAt) {
+      s.level = bar.c;
+    }
+    return fills;
+  }
+}
+
+// ── Dip sleeve ────────────────────────────────────────────────────────────────────────────────────
+// A separate pot of cash per coin. While the coin's regime is on (uptrend), a bar whose low is `drop` below the highest
+// high of the previous `windowMin` minutes triggers a market buy at the next bar's open, paying `crashSlipBps` of extra
+// slippage on top of the taker fee (fills during crashes are worse). The position is sold at market `holdMin` later.
+
+export interface DipConfig { drop: number; windowMin: number; holdMin: number; takerBps: number; crashSlipBps: number }
+export const DEFAULT_DIP: DipConfig = { drop: 0.05, windowMin: 60, holdMin: 1440, takerBps: 40, crashSlipBps: 50 };
+
+export interface DipState {
+  cash: number;
+  qty: number;
+  entryT: number;
+  pending: boolean;             // triggered; buy at the next bar's open
+  highs: [number, number][];    // monotonic deque of [t, high] covering the last windowMin minutes
+}
+export const newDipState = (cash: number): DipState => ({ cash, qty: 0, entryT: 0, pending: false, highs: [] });
+
+export class DipSleeve {
+  constructor(readonly cfg: DipConfig, public state: DipState) {}
+
+  equity(price: number): number { return this.state.cash + this.state.qty * price; }
+
+  onBar(bar: Bar, uptrend: boolean): Fill[] {
+    const s = this.state, cfg = this.cfg, fills: Fill[] = [];
+    const taker = cfg.takerBps / 1e4;
+    if (s.pending) {
+      const price = bar.o * (1 + cfg.crashSlipBps / 1e4), fee = s.cash * taker, qty = (s.cash - fee) / price;
+      s.qty = qty; s.cash = 0; s.entryT = bar.t; s.pending = false;
+      fills.push({ t: bar.t, side: "BUY", price, qty, fee, kind: "dip-buy", cashAfter: s.cash });
+    } else if (s.qty && bar.t >= s.entryT + cfg.holdMin * 60_000) {
+      const gross = s.qty * bar.o, fee = gross * taker;
+      s.cash += gross - fee;
+      fills.push({ t: bar.t, side: "SELL", price: bar.o, qty: s.qty, fee, kind: "dip-sell", cashAfter: s.cash });
+      s.qty = 0;
+    }
+    const priorHigh = s.highs[0]?.[1];
+    if (!s.qty && !s.pending && uptrend && s.cash > 0 && priorHigh && bar.l <= priorHigh * (1 - cfg.drop)) s.pending = true;
+    while (s.highs.length && s.highs.at(-1)![1] <= bar.h) s.highs.pop();
+    s.highs.push([bar.t, bar.h]);
+    while (s.highs[0]![0] <= bar.t - cfg.windowMin * 60_000) s.highs.shift();
+    return fills;
+  }
+}
