@@ -1,8 +1,15 @@
 #!/bin/bash
 # bash (not sh/dash) is required for `wait -n`
 
-# Ensure data directory exists
+# Ensure data directory exists (may be an empty Railway volume on first boot)
 mkdir -p data/bot-live
+
+# Seed the volume with the known positions so the bot never starts from zero
+# and re-buys. Never overwrites existing state.
+if [ ! -f data/bot-live/state.json ]; then
+  echo "🌱 No bot state found — seeding data/bot-live from image"
+  cp -n seed/bot-live/* data/bot-live/
+fi
 
 export PORT=${PORT:-3333}
 

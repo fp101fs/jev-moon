@@ -9,7 +9,9 @@ RUN bun install --production
 COPY tsconfig.json ./
 COPY src/ ./src/
 COPY public/ ./public/
-COPY data/bot-live/ ./data/bot-live/
+# Seed state lives outside /app/data so a mounted volume doesn't hide it;
+# entrypoint.sh copies it into the volume on first boot.
+COPY data/bot-live/ ./seed/bot-live/
 COPY entrypoint.sh ./
 
 RUN chmod +x entrypoint.sh
