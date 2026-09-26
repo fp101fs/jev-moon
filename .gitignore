@@ -6,4 +6,5 @@ dist/
 recordings/*.jsonl
 !recordings/example.jsonl
 recordings/*.meta.json
-data/
+data/*
+!data/bot-live/

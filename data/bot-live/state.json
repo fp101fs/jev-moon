@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "startedAt": "2026-09-26T06:46:30.409Z",
+  "capital": 100,
+  "config": {
+    "mode": "hold",
+    "spacing": 0.04,
+    "units": 10,
+    "regimeDays": 200,
+    "regimeBand": 0.05,
+    "trailingStop": 0.1,
+    "assetTrailingStops": {
+      "BTC": 0.08,
+      "ETH": 0.1,
+      "SOL": 0.12
+    },
+    "parabolicTrim": true,
+    "parabolicStretchThreshold": 1.6,
+    "parabolicTrimFraction": 0.25,
+    "bullCashYieldApr": 0.15,
+    "bearCashYieldApr": 0.05,
+    "cashYieldApr": 0.05,
+    "makerBps": 22,
+    "takerBps": 40,
+    "makerEntry": true,
+    "bullLeverage": 1,
+    "marginApr": 0.06
+  },
+  "live": true,
+  "coins": {
+    "BTC": {
+      "cash": 0,
+      "lots": [
+        0.000485145395350358
+      ],
+      "level": 0,
+      "active": true,
+      "regimeOn": true,
+      "peak": 86593.8,
+      "stopped": false,
+      "stopPeak": 0,
+      "ema": 73931.18404369488,
+      "lastDailyClose": 1790294400000,
+      "trimmedQty": 0
+    },
+    "ETH": {
+      "cash": 0,
+      "lots": [
+        0.014914942579134184
+      ],
+      "level": 0,
+      "active": true,
+      "regimeOn": true,
+      "peak": 2775.84,
+      "stopped": false,
+      "stopPeak": 0,
+      "ema": 2245.46727296732,
+      "lastDailyClose": 1790294400000,
+      "trimmedQty": 0
+    },
+    "SOL": {
+      "cash": 0,
+      "lots": [
+        0.33062106994317497
+      ],
+      "level": 0,
+      "active": true,
+      "regimeOn": true,
+      "peak": 122.14,
+      "stopped": false,
+      "stopPeak": 0,
+      "ema": 93.83577849430331,
+      "lastDailyClose": 1790294400000,
+      "trimmedQty": 0
+    }
+  },
+  "lastBar": {
+    "BTC": 1790406480000,
+    "ETH": 1790406480000,
+    "SOL": 1790406480000
+  },
+  "lastPrice": {
+    "BTC": 83989,
+    "ETH": 2689.25,
+    "SOL": 120.44
+  },
+  "dayStart": {
+    "day": 20722,
+    "equity": 100
+  }
+}
