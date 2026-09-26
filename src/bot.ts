@@ -1,16 +1,21 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { CoinStrategy, DEFAULT_CONFIG, STRATEGY_PRESETS, newCoinState, type Bar, type CoinState, type Fill, type StrategyConfig, type StrategyPreset } from "./strategy";
+import { KrakenClient } from "./kraken-client";
 
-// Paper-trading bot: live Kraken 1-minute candles, simulated fills, same strategy code and fees as the backtest.
-// It never places real orders.
+// Trading bot: live Kraken 1-minute candles, dual-mode (Paper simulation or Live execution).
 //
-//   bun src/bot.ts          run (polls every minute; state survives restarts)
-//   bun src/bot.ts status   print positions, P&L and recent trades
+//   bun src/bot.ts                      Run in Paper simulation ($100 default capital)
+//   LIVE_TRADING=true bun src/bot.ts    Run in LIVE TRADING mode on real Kraken Pro
+//   bun src/bot.ts status               Print positions, P&L, and recent trades
+//   LIVE_TRADING=true bun src/bot.ts status   Print live Kraken positions & balances
+
+const LIVE_TRADING = Bun.env.LIVE_TRADING === "true";
+const kraken = LIVE_TRADING ? new KrakenClient() : null;
 
 const PAIRS = { BTC: "XBTUSD", ETH: "ETHUSD", SOL: "SOLUSD" } as const;
 type Coin = keyof typeof PAIRS;
 const COINS = Object.keys(PAIRS) as Coin[];
-const DIR = Bun.env.BOT_DIR ?? "data/bot";
+const DIR = Bun.env.BOT_DIR ?? (LIVE_TRADING ? "data/bot-live" : "data/bot");
 const STATE = `${DIR}/state.json`, TRADES = `${DIR}/trades.jsonl`, DAILY = `${DIR}/daily.jsonl`;
 const DAY = 86_400_000, POLL_MS = 60_000;
 const num = (name: string, fallback: number) => { const v = Number(Bun.env[name] ?? fallback); return Number.isFinite(v) ? v : fallback; };
@@ -37,6 +42,7 @@ interface BotState {
   startedAt: string;
   capital: number;
   config: StrategyConfig;
+  live: boolean;
   coins: Record<Coin, CoinState>;
   lastBar: Record<Coin, number>;      // ms timestamp of the last 1-minute bar processed
   lastPrice: Record<Coin, number>;
@@ -73,16 +79,16 @@ async function init(): Promise<BotState> {
     if (JSON.stringify(existing.config) !== JSON.stringify(config)) {
       throw new Error(`Saved state uses a different strategy config than the current settings.\nSaved:   ${JSON.stringify(existing.config)}\nCurrent: ${JSON.stringify(config)}\nMove ${STATE} aside to start fresh.`);
     }
-    log(`Resuming paper account from ${existing.startedAt} · equity ${money(equity(existing))}`);
+    log(`Resuming ${existing.live ? "LIVE KRAKEN" : "paper"} account from ${existing.startedAt} · equity ${money(equity(existing))}`);
     return existing;
   }
-  const capital = num("BOT_CAPITAL", 10_000);
+  const capital = num("BOT_CAPITAL", 100);
   const state: BotState = {
-    version: 1, startedAt: new Date().toISOString(), capital, config,
+    version: 1, startedAt: new Date().toISOString(), capital, config, live: LIVE_TRADING,
     coins: {} as BotState["coins"], lastBar: {} as BotState["lastBar"], lastPrice: {} as BotState["lastPrice"], dayStart: { day: 0, equity: capital },
   };
   for (const coin of COINS) {
-    const strat = new CoinStrategy(config, newCoinState(capital / COINS.length));
+    const strat = new CoinStrategy(config, newCoinState(capital / COINS.length), coin);
     for (const d of await ohlc(PAIRS[coin], 1440)) strat.onDailyClose(d.t, d.c); // warm up the 200-day regime
     const minutes = await ohlc(PAIRS[coin], 1);
     state.coins[coin] = strat.state;
@@ -92,13 +98,13 @@ async function init(): Promise<BotState> {
   state.dayStart = { day: Math.floor(Date.now() / DAY), equity: capital };
   mkdirSync(DIR, { recursive: true });
   save(state);
-  log(`New paper account · ${money(capital)} split across ${COINS.join("/")} · ${describeCfg(config)} · maker ${config.makerBps} / taker ${config.takerBps} bps`);
+  log(`New ${LIVE_TRADING ? "🔴 LIVE KRAKEN" : "📄 paper"} account · ${money(capital)} split across ${COINS.join("/")} · ${describeCfg(config)} · maker ${config.makerBps} / taker ${config.takerBps} bps`);
   return state;
 }
 
 async function cycle(state: BotState): Promise<void> {
   for (const coin of COINS) {
-    const strat = new CoinStrategy(state.config, state.coins[coin]);
+    const strat = new CoinStrategy(state.config, state.coins[coin], coin);
     const bars = (await ohlc(PAIRS[coin], 1, state.lastBar[coin])).filter((b) => b.t > state.lastBar[coin]);
     if (!bars.length) continue;
     if (bars[0]!.t - state.lastBar[coin] > 2 * 60_000) log(`${coin}: gap of ${Math.round((bars[0]!.t - state.lastBar[coin]) / 60_000)} min in 1-minute data (bot was down?)`);
@@ -113,7 +119,41 @@ async function cycle(state: BotState): Promise<void> {
         else if (strat.state.stopped && !wasStopped) log(`${coin}: trailing stop hit — close ${d.c} is ${(state.config.trailingStop * 100).toFixed(0)}%+ below peak ${strat.state.stopPeak}; selling, will re-enter above ${strat.state.stopPeak}`);
         else if (!strat.state.stopped && wasStopped) log(`${coin}: new high ${d.c} above ${strat.state.peak} — re-entering`);
       }
-      for (const fill of strat.onBar(bar)) record(coin, fill);
+      for (const fill of strat.onBar(bar)) {
+        let liveTxid: string | undefined;
+        if (LIVE_TRADING && kraken) {
+          try {
+            const pair = PAIRS[coin];
+            if (fill.side === "BUY") {
+              const res = await kraken.placeOrder({
+                pair,
+                type: "buy",
+                ordertype: config.makerEntry ? "limit" : "market",
+                volume: fill.qty,
+                price: config.makerEntry ? bar.c : undefined,
+                postOnly: config.makerEntry,
+              });
+              liveTxid = res.txid[0];
+              log(`[LIVE KRAKEN] Placed BUY ${fill.qty.toFixed(6)} ${coin} @ $${bar.c} (txid: ${liveTxid})`);
+            } else if (fill.side === "SELL") {
+              const isTrim = fill.kind === "dip-sell";
+              const res = await kraken.placeOrder({
+                pair,
+                type: "sell",
+                ordertype: isTrim ? "limit" : "market",
+                volume: fill.qty,
+                price: isTrim ? bar.c : undefined,
+                postOnly: isTrim,
+              });
+              liveTxid = res.txid[0];
+              log(`[LIVE KRAKEN] Placed SELL ${fill.qty.toFixed(6)} ${coin} (kind: ${fill.kind}, txid: ${liveTxid})`);
+            }
+          } catch (err) {
+            log(`[LIVE KRAKEN ERROR] ${coin} ${fill.side} failed: ${err instanceof Error ? err.message : err}`);
+          }
+        }
+        record(coin, fill, liveTxid);
+      }
       state.lastBar[coin] = bar.t;
       state.lastPrice[coin] = bar.c;
     }
@@ -129,31 +169,42 @@ async function cycle(state: BotState): Promise<void> {
   save(state);
 }
 
-function record(coin: Coin, f: Fill): void {
-  appendFileSync(TRADES, `${JSON.stringify({ coin, ...f, time: new Date(f.t).toISOString() })}\n`);
-  log(`${coin} ${f.side.padEnd(4)} ${f.qty.toFixed(6)} @ ${f.price.toFixed(2)} (${f.kind}) fee ${money(f.fee)}`);
+function record(coin: Coin, f: Fill, liveTxid?: string): void {
+  appendFileSync(TRADES, `${JSON.stringify({ coin, ...f, liveTxid, time: new Date(f.t).toISOString() })}\n`);
+  log(`${coin} ${f.side.padEnd(4)} ${f.qty.toFixed(6)} @ ${f.price.toFixed(2)} (${f.kind}) fee ${money(f.fee)}${liveTxid ? ` [txid: ${liveTxid}]` : ""}`);
 }
 
-function status(): void {
+async function status(): Promise<void> {
   const s = load();
-  if (!s) { console.log(`No paper account yet — run \`bun src/bot.ts\` first.`); return; }
+  if (!s) { console.log(`No account state found in ${DIR} — run \`bun src/bot.ts\` first.`); return; }
   const eq = equity(s);
-  console.log(`\nPaper account since ${s.startedAt.slice(0, 16).replace("T", " ")} UTC · ${describeCfg(s.config)}`);
-  console.log(`Equity ${money(eq)} · since start ${eq - s.capital >= 0 ? "+" : ""}${money(eq - s.capital)} (${((eq / s.capital - 1) * 100).toFixed(2)}%) · today ${eq - s.dayStart.equity >= 0 ? "+" : ""}${money(eq - s.dayStart.equity)}\n`);
+  console.log(`\n${s.live ? "🔴 LIVE KRAKEN ACCOUNT" : "📄 PAPER ACCOUNT"} since ${s.startedAt.slice(0, 16).replace("T", " ")} UTC · ${describeCfg(s.config)}`);
+  console.log(`Allocated Capital: ${money(s.capital)} · Strategy Equity: ${money(eq)} (${((eq / s.capital - 1) * 100).toFixed(2)}%) · today ${eq - s.dayStart.equity >= 0 ? "+" : ""}${money(eq - s.dayStart.equity)}\n`);
+
+  if (s.live && kraken) {
+    try {
+      const b = await kraken.getBalance();
+      console.log(`Kraken Account Balances: USD: ${money(b.ZUSD || 0)} | BTC: ${(b.XXBT || 0).toFixed(6)} | ETH: ${(b.XETH || 0).toFixed(5)} | SOL: ${(b.SOL || 0).toFixed(4)}\n`);
+    } catch (e) {
+      console.log(`(Could not fetch live Kraken balances: ${e instanceof Error ? e.message : e})\n`);
+    }
+  }
+
   console.log(`${"coin".padEnd(6)}${"price".padStart(11)}${"regime".padStart(9)}${"200d EMA".padStart(11)}${"slots".padStart(7)}${"coin value".padStart(12)}${"cash".padStart(11)}${"next buy".padStart(11)}${"next sell".padStart(11)}`);
   for (const coin of COINS) {
-    const st = new CoinStrategy(s.config, s.coins[coin]), c = s.coins[coin], p = s.lastPrice[coin];
+    const st = new CoinStrategy(s.config, s.coins[coin], coin), c = s.coins[coin], p = s.lastPrice[coin];
     const grid = s.config.mode === "grid" && c.regimeOn;
     console.log(`${coin.padEnd(6)}${p.toFixed(2).padStart(11)}${(c.regimeOn ? (c.stopped ? "STOPPED" : "ON") : "off").padStart(9)}${(c.ema ?? 0).toFixed(2).padStart(11)}${`${c.lots.length}/${s.config.mode === "grid" ? s.config.units : 1}`.padStart(7)}${money(st.quantity * p).padStart(12)}${money(c.cash).padStart(11)}${(grid && c.level ? (c.level * (1 - s.config.spacing)).toFixed(2) : "—").padStart(11)}${(grid && c.lots.length ? (c.level * (1 + s.config.spacing)).toFixed(2) : "—").padStart(11)}`);
   }
   if (s.config.trailingStop) for (const coin of COINS) {
     const c = s.coins[coin];
+    const stopPct = s.config.assetTrailingStops?.[coin] ?? s.config.trailingStop;
     if (c.regimeOn && c.stopped) console.log(`  ${coin}: stopped out — re-enters on a daily close above ${c.stopPeak}`);
-    else if (c.regimeOn && c.peak) console.log(`  ${coin}: peak close ${c.peak} — trailing stop fires on a daily close below ${(c.peak * (1 - s.config.trailingStop)).toFixed(2)}`);
+    else if (c.regimeOn && c.peak) console.log(`  ${coin}: peak close ${c.peak} — trailing stop (${(stopPct * 100).toFixed(0)}%) fires on a daily close below ${(c.peak * (1 - stopPct)).toFixed(2)}`);
   }
   const trades = existsSync(TRADES) ? readFileSync(TRADES, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   console.log(`\n${trades.length} trades so far${trades.length ? ", latest:" : "."}`);
-  for (const t of trades.slice(-5)) console.log(`  ${t.time.slice(0, 16).replace("T", " ")}  ${t.coin} ${t.side} ${t.qty.toFixed(6)} @ ${t.price.toFixed(2)} (${t.kind})`);
+  for (const t of trades.slice(-5)) console.log(`  ${t.time.slice(0, 16).replace("T", " ")}  ${t.coin} ${t.side} ${t.qty.toFixed(6)} @ ${t.price.toFixed(2)} (${t.kind})${t.liveTxid ? ` [txid: ${t.liveTxid}]` : ""}`);
   const days = existsSync(DAILY) ? readFileSync(DAILY, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   if (days.length) {
     console.log(`\nLast ${Math.min(7, days.length)} days:`);
@@ -161,7 +212,7 @@ function status(): void {
   }
 }
 
-if (Bun.argv[2] === "status") status();
+if (Bun.argv[2] === "status") await status();
 else {
   const state = await init();
   let busy = false;
