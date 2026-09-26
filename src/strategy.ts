@@ -74,7 +74,7 @@ export const STRATEGY_PRESETS: Record<StrategyPreset, StrategyConfig> = {
 
 
 export interface Bar { t: number; o: number; h: number; l: number; c: number }
-export interface Fill { t: number; side: "BUY" | "SELL"; price: number; qty: number; fee: number; kind: "grid" | "regime-on" | "regime-off" | "trailing-stop" | "dip-buy" | "dip-sell"; cashAfter: number }
+export interface Fill { t: number; side: "BUY" | "SELL"; price: number; qty: number; fee: number; kind: "grid" | "regime-on" | "regime-off" | "trailing-stop" | "dip-buy" | "dip-sell" | "top-up"; cashAfter: number }
 
 export interface CoinState {
   cash: number;
@@ -88,6 +88,7 @@ export interface CoinState {
   ema: number | null;
   lastDailyClose: number | null; // timestamp (ms) of the last daily candle fed in
   trimmedQty?: number;
+  topUp?: number;        // capital added mid-position, bought into the open position on the next allowed bar
 }
 
 export const newCoinState = (cash: number): CoinState => ({
@@ -140,6 +141,12 @@ export class CoinStrategy {
     s.lastDailyClose = t;
   }
 
+  /** Add fresh capital. In hold mode it joins an open position on the next bar if the coin is allowed; otherwise it waits as cash for the next entry. */
+  addCapital(amount: number): void {
+    this.state.cash += amount;
+    if (this.cfg.mode === "hold") this.state.topUp = (this.state.topUp ?? 0) + amount;
+  }
+
   /** May we hold the coin right now? Regime on and trailing stop not triggered. */
   get allowed(): boolean { return this.state.regimeOn && !this.state.stopped; }
 
@@ -155,6 +162,7 @@ export class CoinStrategy {
       }
       s.active = false;
       s.trimmedQty = 0;
+      s.topUp = 0; // pending top-up stays as cash and is invested with the next full entry
       return fills;
     }
     if (cfg.mode === "hold") {
@@ -180,6 +188,16 @@ export class CoinStrategy {
         s.trimmedQty = 0;
         fills.push({ t: bar.t, side: "BUY", price: bar.o, qty, fee, kind: "dip-buy", cashAfter: s.cash });
       }
+
+      if (s.topUp && s.lots.length) {
+        const buyAmt = Math.min(s.topUp, s.cash);
+        const feeRate = cfg.makerEntry ? maker : taker;
+        const fee = buyAmt * feeRate, qty = (buyAmt - fee) / bar.o;
+        s.lots = [this.quantity + qty];
+        s.cash -= buyAmt;
+        fills.push({ t: bar.t, side: "BUY", price: bar.o, qty, fee, kind: "top-up", cashAfter: s.cash });
+      }
+      s.topUp = 0;
 
       if (!s.lots.length) {
         const feeRate = cfg.makerEntry ? maker : taker;

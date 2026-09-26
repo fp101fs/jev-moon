@@ -23,7 +23,7 @@ bun src/chart-server.ts &
 CHART_PID=$!
 
 # Start continuous live trading bot in background
-LIVE_TRADING=true BOT_CAPITAL=100 BOT_STRATEGY=core-zero-risk bun src/bot.ts &
+LIVE_TRADING=true BOT_CAPITAL=${BOT_CAPITAL:-800} BOT_STRATEGY=core-zero-risk bun src/bot.ts &
 BOT_PID=$!
 
 # Graceful shutdown handler

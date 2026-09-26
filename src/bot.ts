@@ -80,6 +80,18 @@ async function init(): Promise<BotState> {
       throw new Error(`Saved state uses a different strategy config than the current settings.\nSaved:   ${JSON.stringify(existing.config)}\nCurrent: ${JSON.stringify(config)}\nMove ${STATE} aside to start fresh.`);
     }
     log(`Resuming ${existing.live ? "LIVE KRAKEN" : "paper"} account from ${existing.startedAt} · equity ${money(equity(existing))}`);
+    // Raising BOT_CAPITAL on an existing account adds the difference, split evenly; the strategy invests it on the next bar.
+    const target = num("BOT_CAPITAL", existing.capital);
+    if (target > existing.capital) {
+      const extra = target - existing.capital;
+      for (const coin of COINS) new CoinStrategy(existing.config, existing.coins[coin], coin).addCapital(extra / COINS.length);
+      existing.capital = target;
+      existing.dayStart.equity += extra; // new money isn't profit
+      save(existing);
+      log(`Capital raised to ${money(target)} (+${money(extra)}, ${money(extra / COINS.length)} per coin)`);
+    } else if (target < existing.capital) {
+      log(`BOT_CAPITAL ${money(target)} is below the account's ${money(existing.capital)} — lowering capital isn't supported, ignoring`);
+    }
     return existing;
   }
   const capital = num("BOT_CAPITAL", 100);
