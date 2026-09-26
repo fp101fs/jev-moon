@@ -138,7 +138,7 @@ function runSimulation(opts: SimOptions, from: number): {
       else if (pos.regimeOn && c < e200[k]! * 0.95) pos.regimeOn = false;
 
       // Trailing stop loss threshold (Idea 2)
-      const stopDistance = opts.customStops ? opts.customStops[coinName] : (cfg.trailingStopPct || 0.10);
+      const stopDistance = opts.customStops ? opts.customStops[coinName] : (cfg.trailingStop || 0.10);
 
       if (!pos.regimeOn) {
         pos.peak = 0;

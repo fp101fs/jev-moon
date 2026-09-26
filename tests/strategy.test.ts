@@ -120,5 +120,41 @@ describe("strategy enhancements", () => {
     const [fill] = s.onBar(bar(0, 100));
     expect(fill!.fee).toBeCloseTo(1000 * (20 / 1e4));
   });
+  test("uses asset-specific trailing stops when provided", () => {
+    const customCfg = { ...cfg, mode: "hold" as const, trailingStop: 0.10, assetTrailingStops: { BTC: 0.08, SOL: 0.12 } };
+    const btcStrat = new CoinStrategy(customCfg, newCoinState(1000), "BTC");
+    btcStrat.state.regimeOn = true;
+    btcStrat.state.peak = 100;
+    btcStrat.onDailyClose(0, 91.5); // 8.5% drop: fires 8% BTC stop
+    expect(btcStrat.state.stopped).toBe(true);
+
+    const solStrat = new CoinStrategy(customCfg, newCoinState(1000), "SOL");
+    solStrat.state.regimeOn = true;
+    solStrat.state.peak = 100;
+    solStrat.onDailyClose(0, 91.5); // 8.5% drop: DOES NOT fire 12% SOL stop
+    expect(solStrat.state.stopped).toBe(false);
+  });
+  test("trims 25% on parabolic extension > 1.6x 200 EMA", () => {
+    const s = new CoinStrategy(
+      { ...cfg, mode: "hold", parabolicTrim: true, parabolicStretchThreshold: 1.60, parabolicTrimFraction: 0.25, makerBps: 0 },
+      newCoinState(0)
+    );
+    s.state.regimeOn = true;
+    s.state.lots = [10]; // holds 10 coins
+    s.state.ema = 100;
+    // Bar closes at 165 (> 1.6x 100 EMA)
+    const [trimFill] = s.onBar(bar(0, 165, 170, 160, 165));
+    expect(trimFill).toBeDefined();
+    expect(trimFill!.side).toBe("SELL");
+    expect(trimFill!.qty).toBeCloseTo(2.5); // 25% of 10
+    expect(s.quantity).toBeCloseTo(7.5);
+    expect(s.state.cash).toBeCloseTo(2.5 * 165);
+  });
+  test("accrues 15% bull basis yield when macro bull is active", () => {
+    const s = new CoinStrategy({ ...cfg, mode: "hold", bullCashYieldApr: 0.15, bearCashYieldApr: 0.05 }, newCoinState(10_000));
+    s.onDailyClose(0, 100, true); // macro bull = true
+    expect(s.state.cash).toBeCloseTo(10_000 * (1 + 0.15 / 365.25));
+  });
 });
+
 

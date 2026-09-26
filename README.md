@@ -207,36 +207,40 @@ bun run compare
 ```
 
 Three production configurations are built into `src/strategy.ts` and `src/bot.ts`:
-1. **Core (Baseline)**: 200-day EMA trend filter + 10% trailing stop + patient new-high re-entry (`close > stopPeak`).
-2. **Core + Zero Extra Risk (`BOT_STRATEGY=core-zero-risk`)**: Adds **5% APR cash yield** on idle cash balances + **maker-first orders** (22 bps vs 40 bps). Zero extra leverage or market risk.
-3. **Core + Bull Leverage (`BOT_STRATEGY=core-leveraged`)**: Adds **1.25x spot leverage** exclusively during synchronized macro bull runs (when BTC, ETH, and SOL all trend above their 200d averages), instantly de-leveraging to 1.0x or 0x as soon as any stop fires.
+1. **Core (Baseline)**: Original untouched benchmark: 200-day EMA trend filter + flat 10% trailing stop + patient new-high re-entry (`close > stopPeak`), taker fees, 0% cash yield.
+2. **Core + Zero Extra Risk (`BOT_STRATEGY=core-zero-risk`)**: Fully unleveraged (1.0x). Integrates the 3 structural upgrades:
+   - **Asset-Specific Stops**: 8% BTC (tighter exit at tops), 10% ETH, 12% SOL (room for high-beta pullbacks).
+   - **Parabolic Extension Trimming**: Trims 25% of position into cash when price stretches > 60% above the 200d EMA.
+   - **Dynamic Basis Yield**: 15% APR on idle cash during macro bull pauses (5% in bear).
+   - **Maker-First Execution**: 22 bps limit orders vs 40 bps taker fees. Zero added leverage.
+3. **New Core (`BOT_STRATEGY=core-leveraged` or `core`)**: Combines all Zero-Risk structural upgrades + **1.25x spot leverage** exclusively during synchronized macro bull runs (when BTC, ETH, and SOL all trend above their 200d averages).
 
 ### Head-to-Head Comparison ($10,000 Starting Capital, Kraken Pro Fees)
 
 #### Conservative Window: Jan 2022 – Aug 2026 (4.7 Years, Starts into Crash)
 | Strategy Variant | Ending Value | Total Profit ($) | Total Profit (%) | Ann. Return (CAGR) | Average $/Day | Max Drawdown | Worst Month | Trades |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Core (Baseline)** | $20,905 | **+$10,905** | **+109%** | +17.1% | **$6.40 / day** | **−27.3%** | −11.6% | 83 |
-| **Core + 0 Risk** | $25,744 | **+$15,744** | **+157%** | +22.5% | **$9.24 / day** | **−22.8% (Safer)** | −11.2% | 83 |
-| **Core + Leverage** | $28,424 | **+$18,424** | **+184%** | +25.1% | **$10.81 / day** | **−24.5%** | −13.5% | 384 |
+| **Core Baseline (Orig)** | $20,905 | **+$10,905** | **+109%** | +17.1% | **$6.40 / day** | **−27.3%** | −11.6% | 83 |
+| **Core + 0 Risk (Unlev)** | $25,401 | **+$15,401** | **+154%** | +22.1% | **$9.04 / day** | **−22.4% (Safer)** | −11.2% | 93 |
+| **New Core (+1.25x Lev)** | $30,285 | **+$20,285** | **+203%** | +26.8% | **$11.90 / day** | **−25.3%** | −12.8% | 273 |
 
 #### Full 5.1-Year Cycle: Aug 2021 – Aug 2026 (Includes 2021 Bull Run)
 | Strategy Variant | Ending Value | Total Profit ($) | Total Profit (%) | Ann. Return (CAGR) | Average $/Day | Max Drawdown | Worst Month | Trades |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Core (Baseline)** | $46,466 | **+$36,466** | **+365%** | +35.3% | **$19.64 / day** | **−36.1%** | −13.3% | 97 |
-| **Core + 0 Risk** | $58,971 | **+$48,971** | **+490%** | +41.8% | **$26.37 / day** | **−30.1% (Safer)** | −12.9% | 97 |
-| **Core + Leverage** | $80,501 | **+$70,501** | **+705%** | +50.7% | **$37.96 / day** | **−36.0%** | −16.7% | 442 |
+| **Core Baseline (Orig)** | $46,466 | **+$36,466** | **+365%** | +35.3% | **$19.64 / day** | **−36.1%** | −13.3% | 97 |
+| **Core + 0 Risk (Unlev)** | $56,669 | **+$46,669** | **+467%** | +40.7% | **$25.13 / day** | **−29.4% (Safer)** | −12.4% | 109 |
+| **New Core (+1.25x Lev)** | $101,625 | **+$91,625** | **+916%** | +57.8% | **$49.34 / day** | **−40.9%** | −16.8% | 306 |
 
 ### Year-by-Year Performance & Trade Activity (Fixed $10k Stake)
 
 | Year | Market Phase | Buy & Hold Benchmark | Core + 0 Risk (Unlev) | New Core (+1.25x Lev) | Total Trades |
 | :---: | :--- | :---: | :---: | :---: | :---: |
-| **2021** *(Aug–Dec)* | Late Bull Supercycle | +159.0% (+$90.11/d) | +102.7% (+$64.23/d) | **+131.9% (+$82.92/d)** | 18–36 trades |
-| **2022** | **Crypto Crash** | **−84.7% (−$20.68/d)** | **−14.6% (−$4.31/d)** | **−18.9% (−$5.00/d)** | **12–15 trades** |
-| **2023** | Recovery Rally | +334.8% (+$105.47/d) | +141.2% (+$27.28/d) | **+193.9% (+$34.36/d)** | 20–32 trades |
-| **2024** | Bull Expansion | +78.4% (+$22.70/d) | +33.5% (+$14.20/d) | **+42.9% (+$16.71/d)** | 32–47 trades |
-| **2025** | Choppy Correction | −23.8% (−$4.88/d) | **−2.8% (+$2.39/d)** | **−8.0% (+$1.36/d)** | 26–39 trades |
-| **2026** *(thru Aug)* | Sideways Drift | −16.7% (−$6.40/d) | **+11.3% (+$3.85/d)** | **+13.2% (+$4.05/d)** | 3–4 trades |
+| **2021** *(Aug–Dec)* | Late Bull Supercycle | +159.0% (+$90.11/d) | +98.1% (+$64.11/d) | **+158.9% (+$103.82/d)** | 20–37 trades |
+| **2022** | **Crypto Crash** | **−84.7% (−$20.68/d)** | **−15.0% (−$4.12/d)** | **−17.6% (−$4.81/d)** | **12–14 trades** |
+| **2023** | Recovery Rally | +334.8% (+$105.47/d) | +87.5% (+$23.97/d) | **+129.0% (+$35.33/d)** | 22–70 trades |
+| **2024** | Bull Expansion | +78.4% (+$22.70/d) | +57.0% (+$15.58/d) | **+62.8% (+$17.17/d)** | 39–123 trades |
+| **2025** | Choppy Correction | −23.8% (−$4.88/d) | **+2.8% (+$0.76/d)** | **+1.3% (+$0.36/d)** | 31–79 trades |
+| **2026** *(thru Aug)* | Sideways Drift | −16.7% (−$6.40/d) | **+9.4% (+$3.85/d)** | **+9.9% (+$4.05/d)** | 3–4 trades |
 
 ### Operating Cost & Overhead
 - **Market Data Feed:** **$0.00 / day** (uses free public Kraken OHLC and WebSocket APIs; no keys required).

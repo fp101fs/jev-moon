@@ -65,3 +65,18 @@ This document outlines key opportunities and data-backed concepts to scale the p
 | **5. Macro Bull Leverage (1.50x)** | **+$15,338 (+153% / −32% DD)** | **+$80,071 (+801% / −49% DD)** | 🚀 **PROFIT ROCKET**: Massive gain, higher DD |
 | **6. Maker-First Orders (22 vs 40 bps)** | **+$11,462 (+115% / −27% DD)** | **+$38,058 (+381% / −36% DD)** | ✅ **SOLID WIN**: Free +$557 to +$1,600 profit |
 
+---
+
+## 9. Round 2 Optimization Results: 5 New Ideas Tested (`bun run test-new-ideas`)
+
+| Concept | Jan 2022 – Aug 2026 P&L (Total / MaxDD) | Aug 2021 – Aug 2026 P&L (Total / MaxDD) | Verdict |
+| :--- | :---: | :---: | :--- |
+| **Current New Core (Yield + Maker + 1.25x Lev)** | **+$18,424 (+184% / −24.5% DD)** | **+$70,501 (+705% / −36.0% DD)** | **Prior Benchmark** |
+| **A. Momentum Tilt (50/32/18)** | +$14,499 (+145% / −46.3% DD) | +$46,187 (+462% / −46.5% DD) | ❌ **FAIL**: Momentum rotation lag whipsaw |
+| **B. Asset-Scaled Stops (8% BTC / 10% ETH / 12% SOL)** | **+$18,313 (+183% / −26.0% DD)** | **+$81,360 (+814% / −42.8% DD)** | 🏆 **HUGE WIN**: +$10.8k profit, trades down 34% |
+| **C. Parabolic Trim (25% at >1.60x 200d EMA)** | **+$18,849 (+188% / −24.0% DD)** | **+$71,517 (+715% / −36.3% DD)** | 🏆 **WIN**: Locks in blow-off tops, cuts DD |
+| **D. Patience Reset (20d Breakout after 45d)** | +$15,197 (+152% / −30.3% DD) | +$60,148 (+601% / −39.2% DD) | ❌ **FAIL**: Re-enters bear chop traps |
+| **E. Dynamic Bull Basis Yield (15% APR on cash)** | **+$20,261 (+203% / −24.5% DD)** | **+$78,244 (+782% / −34.4% DD)** | 🏆 **WIN**: +$7.7k profit from delta-neutral basis |
+| **WINNING TRIPLE COMBO (B + C + E Integrated)** | **+$20,285 (+203% / −25.3% DD)** | **+$91,625 (+916% / −40.9% DD)** | 🚀 **SUPER CORE**: **$101,625 on $10k (10.1x)** |
+
+

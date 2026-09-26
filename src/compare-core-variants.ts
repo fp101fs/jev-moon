@@ -25,9 +25,9 @@ interface StrategyVariant {
 }
 
 const VARIANTS: StrategyVariant[] = [
-  { name: "New Core (Default: Yield + Maker + 1.25x Leverage)", shortName: "New Core (Yield + Lev)", config: STRATEGY_PRESETS.core },
-  { name: "Core + 0 Risk (Yield + Maker, Unleveraged 1.0x)", shortName: "Core + 0 Risk (Unlev)", config: STRATEGY_PRESETS["core-zero-risk"] },
-  { name: "Core Baseline (Original 0% Yield, Taker, 1.0x)", shortName: "Core Baseline (Orig)", config: STRATEGY_PRESETS["core-baseline"] },
+  { name: "New Core (Default: Yield + Maker + 1.25x Lev + Stops + Trim)", shortName: "New Core (+1.25x Lev)", config: STRATEGY_PRESETS.core },
+  { name: "Core + 0 Risk (Upgraded: Unleveraged 1.0x + Stops + Trim)", shortName: "Core + 0 Risk (Unlev)", config: STRATEGY_PRESETS["core-zero-risk"] },
+  { name: "Core Baseline (Original: 0% Yield, Taker, Flat 10% Stop, 1.0x)", shortName: "Core Baseline (Orig)", config: STRATEGY_PRESETS["core-baseline"] },
 ];
 
 
@@ -54,6 +54,7 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
     stopped: false,
     stopPeak: 0,
     regimeOn: false,
+    trimmedQty: 0,
     cash: CAPITAL / 3,
   }));
 
@@ -71,6 +72,7 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
       if (k < 0) return false;
       const c = b.c[k]!;
       const pos = positions[s]!;
+      const stopDistance = (cfg.assetTrailingStops && cfg.assetTrailingStops[coins[s]!]) ?? (cfg.trailingStop || 0.10);
 
       if (!pos.regimeOn && c > e200[k]! * 1.05) pos.regimeOn = true;
       else if (pos.regimeOn && c < e200[k]! * 0.95) pos.regimeOn = false;
@@ -79,16 +81,20 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
         pos.peak = 0;
         pos.stopped = false;
         pos.stopPeak = 0;
+        pos.trimmedQty = 0;
       } else if (pos.stopped) {
         if (c > pos.stopPeak) {
           pos.stopped = false;
           pos.peak = c;
+          pos.stopPeak = 0;
+          pos.trimmedQty = 0;
         }
       } else {
         pos.peak = Math.max(pos.peak, c);
-        if (c < pos.peak * 0.9) {
+        if (c < pos.peak * (1 - stopDistance)) {
           pos.stopped = true;
           pos.stopPeak = pos.peak;
+          pos.trimmedQty = 0;
         }
       }
 
@@ -97,15 +103,43 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
 
     // Check if macro bull regime
     const allBull = wantHold.every(Boolean);
+    const btcPos = positions[0]!;
+    const btcInBull = btcPos.regimeOn && !btcPos.stopped;
     const lev = allBull && cfg.bullLeverage ? cfg.bullLeverage : 1.0;
 
     // 2. Execute on today's open price
     for (let s = 0; s < 3; s++) {
-      const { b } = coinDaily[s]!;
+      const { b, e200 } = coinDaily[s]!;
       const k = b.t.findIndex((t) => Math.floor(t / DAY) === day);
       if (k < 0) continue;
       const openPrice = b.o[k]!;
       const pos = positions[s]!;
+
+      // Parabolic extension trimming
+      if (cfg.parabolicTrim && wantHold[s] && pos.qty > 0) {
+        const prevK = k - 1;
+        if (prevK >= 0) {
+          const stretch = b.c[prevK]! / e200[prevK]!;
+          const stretchThresh = cfg.parabolicStretchThreshold ?? 1.60;
+          if (stretch > stretchThresh && pos.trimmedQty === 0) {
+            const trimFrac = cfg.parabolicTrimFraction ?? 0.25;
+            const sellQty = pos.qty * trimFrac;
+            const gross = sellQty * openPrice;
+            pos.cash += gross * (1 - maker);
+            pos.qty -= sellQty;
+            pos.trimmedQty = sellQty;
+            trades++;
+          } else if (stretch < 1.30 && pos.trimmedQty > 0) {
+            const buyAmt = pos.cash * 0.5;
+            if (buyAmt > 10) {
+              pos.qty += (buyAmt * (1 - entryFee)) / openPrice;
+              pos.cash -= buyAmt;
+              pos.trimmedQty = 0;
+              trades++;
+            }
+          }
+        }
+      }
 
       if (!wantHold[s]) {
         // Must be in cash
@@ -114,6 +148,7 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
           const fee = gross * taker;
           pos.cash += gross - fee;
           pos.qty = 0;
+          pos.trimmedQty = 0;
           trades++;
         }
       } else {
@@ -143,8 +178,14 @@ export function simulateVariant(v: StrategyVariant, from: number): VariantResult
       }
 
       // Accrue cash yield or margin interest
-      if (pos.cash > 0 && cfg.cashYieldApr) {
-        pos.cash += pos.cash * (cfg.cashYieldApr / 365.25);
+      if (pos.cash > 0) {
+        let apr = cfg.cashYieldApr || 0;
+        if (cfg.bullCashYieldApr !== undefined && cfg.bearCashYieldApr !== undefined) {
+          apr = btcInBull ? cfg.bullCashYieldApr : cfg.bearCashYieldApr;
+        }
+        if (apr > 0) {
+          pos.cash += pos.cash * (apr / 365.25);
+        }
       } else if (pos.cash < 0 && cfg.marginApr) {
         pos.cash -= (-pos.cash) * (cfg.marginApr / 365.25);
       }

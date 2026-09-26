@@ -14,10 +14,16 @@ export interface StrategyConfig {
   units: number;         // grid slots
   regimeDays: number;    // EMA length in days
   regimeBand: number;    // hysteresis: on above EMA × (1 + band), off below EMA × (1 − band)
-  trailingStop: number;  // e.g. 0.10 = sell after a 10% fall from the peak close; 0 = off
+  trailingStop: number;  // fallback trailing stop, e.g. 0.10 = 10%
+  assetTrailingStops?: Record<string, number>; // asset-specific trailing stops e.g. { BTC: 0.08, ETH: 0.10, SOL: 0.12 }
+  parabolicTrim?: boolean;                     // take partial profits when hyper-extended above 200d EMA
+  parabolicStretchThreshold?: number;          // e.g. 1.60 = 60% above 200d EMA
+  parabolicTrimFraction?: number;              // e.g. 0.25 = trim 25% to cash
+  bullCashYieldApr?: number;                   // e.g. 0.15 = 15% APR on cash during crypto bull basis environment
+  bearCashYieldApr?: number;                   // e.g. 0.05 = 5% APR on cash during bear/neutral
   makerBps: number;
   takerBps: number;      // including slippage
-  cashYieldApr?: number; // e.g. 0.05 = 5% APR on unallocated cash
+  cashYieldApr?: number; // fallback APR on unallocated cash
   makerEntry?: boolean;  // whether entries/re-entries use maker limit orders
   bullLeverage?: number; // e.g. 1.25 = 1.25x leverage in confirmed macro bull
   marginApr?: number;    // e.g. 0.06 = 6% APR on margin debt
@@ -30,9 +36,15 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   regimeDays: 200,
   regimeBand: 0.05,
   trailingStop: 0.1,
+  assetTrailingStops: { BTC: 0.08, ETH: 0.10, SOL: 0.12 },
+  parabolicTrim: true,
+  parabolicStretchThreshold: 1.60,
+  parabolicTrimFraction: 0.25,
+  bullCashYieldApr: 0.15,
+  bearCashYieldApr: 0.05,
+  cashYieldApr: 0.05,
   makerBps: 22,
   takerBps: 40,
-  cashYieldApr: 0.05,
   makerEntry: true,
   bullLeverage: 1.25,
   marginApr: 0.06,
@@ -49,11 +61,16 @@ export const STRATEGY_PRESETS: Record<StrategyPreset, StrategyConfig> = {
   },
   "core-baseline": {
     ...DEFAULT_CONFIG,
+    assetTrailingStops: undefined,
+    parabolicTrim: false,
+    bullCashYieldApr: 0,
+    bearCashYieldApr: 0,
     cashYieldApr: 0,
     makerEntry: false,
     bullLeverage: 1.0,
   },
 };
+
 
 
 export interface Bar { t: number; o: number; h: number; l: number; c: number }
@@ -70,32 +87,55 @@ export interface CoinState {
   stopPeak: number;
   ema: number | null;
   lastDailyClose: number | null; // timestamp (ms) of the last daily candle fed in
+  trimmedQty?: number;
 }
 
-export const newCoinState = (cash: number): CoinState => ({ cash, lots: [], level: 0, active: false, regimeOn: false, peak: 0, stopped: false, stopPeak: 0, ema: null, lastDailyClose: null });
+export const newCoinState = (cash: number): CoinState => ({
+  cash,
+  lots: [],
+  level: 0,
+  active: false,
+  regimeOn: false,
+  peak: 0,
+  stopped: false,
+  stopPeak: 0,
+  ema: null,
+  lastDailyClose: null,
+  trimmedQty: 0,
+});
 
 export class CoinStrategy {
-  constructor(readonly cfg: StrategyConfig, public state: CoinState) {}
+  constructor(readonly cfg: StrategyConfig, public state: CoinState, readonly symbol?: string) {}
 
   get quantity(): number { return this.state.lots.reduce((a, q) => a + q, 0); }
   equity(price: number): number { return this.state.cash + this.quantity * price; }
 
   /** Feed each completed daily candle once, in order. Updates the regime used from the next bar on. */
-  onDailyClose(t: number, close: number): void {
+  onDailyClose(t: number, close: number, isMacroBull?: boolean): void {
     const s = this.state;
     if (s.lastDailyClose !== null && t <= s.lastDailyClose) return;
     const a = 2 / (this.cfg.regimeDays + 1);
     s.ema = s.ema === null ? close : a * close + (1 - a) * s.ema;
     if (!s.regimeOn && close > s.ema * (1 + this.cfg.regimeBand)) s.regimeOn = true;
     else if (s.regimeOn && close < s.ema * (1 - this.cfg.regimeBand)) s.regimeOn = false;
-    if (!s.regimeOn || !this.cfg.trailingStop) { s.peak = 0; s.stopped = false; }
-    else if (s.stopped) { if (close > s.stopPeak) { s.stopped = false; s.peak = close; } }
-    else {
+
+    const stopDistance = (this.symbol && this.cfg.assetTrailingStops?.[this.symbol]) ?? this.cfg.trailingStop;
+    if (!s.regimeOn || !stopDistance) { s.peak = 0; s.stopped = false; s.stopPeak = 0; s.trimmedQty = 0; }
+    else if (s.stopped) {
+      if (close > s.stopPeak) { s.stopped = false; s.peak = close; s.stopPeak = 0; s.trimmedQty = 0; }
+    } else {
       s.peak = Math.max(s.peak ?? 0, close);
-      if (close < s.peak * (1 - this.cfg.trailingStop)) { s.stopped = true; s.stopPeak = s.peak; }
+      if (close < s.peak * (1 - stopDistance)) { s.stopped = true; s.stopPeak = s.peak; s.trimmedQty = 0; }
     }
-    if (s.cash > 0 && this.cfg.cashYieldApr) {
-      s.cash += s.cash * (this.cfg.cashYieldApr / 365.25);
+
+    if (s.cash > 0) {
+      let apr = this.cfg.cashYieldApr ?? 0;
+      if (this.cfg.bullCashYieldApr !== undefined && this.cfg.bearCashYieldApr !== undefined) {
+        apr = (isMacroBull ?? s.regimeOn) ? this.cfg.bullCashYieldApr : this.cfg.bearCashYieldApr;
+      }
+      if (apr > 0) {
+        s.cash += s.cash * (apr / 365.25);
+      }
     }
     s.lastDailyClose = t;
   }
@@ -114,9 +154,33 @@ export class CoinStrategy {
         fills.push({ t: bar.t, side: "SELL", price: bar.o, qty, fee, kind: s.regimeOn ? "trailing-stop" : "regime-off", cashAfter: s.cash });
       }
       s.active = false;
+      s.trimmedQty = 0;
       return fills;
     }
     if (cfg.mode === "hold") {
+      // Parabolic extension trim
+      if (cfg.parabolicTrim && s.ema && s.lots.length && (!s.trimmedQty || s.trimmedQty === 0)) {
+        const stretchThresh = cfg.parabolicStretchThreshold ?? 1.60;
+        if (bar.c > s.ema * stretchThresh) {
+          const trimFrac = cfg.parabolicTrimFraction ?? 0.25;
+          const trimQty = this.quantity * trimFrac;
+          const gross = trimQty * bar.o, fee = gross * maker;
+          s.cash += gross - fee;
+          s.lots = [this.quantity - trimQty];
+          s.trimmedQty = trimQty;
+          fills.push({ t: bar.t, side: "SELL", price: bar.o, qty: trimQty, fee, kind: "dip-sell", cashAfter: s.cash });
+        }
+      } else if (s.trimmedQty && s.trimmedQty > 0 && s.ema && bar.c < s.ema * 1.30 && s.cash > 10) {
+        // Re-accumulate trimmed cash
+        const buyAmt = s.cash * 0.5;
+        const feeRate = cfg.makerEntry ? maker : taker;
+        const fee = buyAmt * feeRate, qty = (buyAmt - fee) / bar.o;
+        s.lots.push(qty);
+        s.cash -= buyAmt;
+        s.trimmedQty = 0;
+        fills.push({ t: bar.t, side: "BUY", price: bar.o, qty, fee, kind: "dip-buy", cashAfter: s.cash });
+      }
+
       if (!s.lots.length) {
         const feeRate = cfg.makerEntry ? maker : taker;
         const fee = s.cash * feeRate, qty = (s.cash - fee) / bar.o;
